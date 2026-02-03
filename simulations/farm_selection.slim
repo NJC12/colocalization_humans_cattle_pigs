@@ -1,0 +1,213 @@
+initialize() {
+    initializeSLiMOptions(keepPedigrees=F);
+    // initializeTreeSeq(simplificationRatio=50);
+    initializeTreeSeq();
+    defineConstant("Q", Q_scaling);
+    defineConstant("L", length);
+    defineConstant("burn_in", 0);
+    defineConstant("pop_names", c("Holstein_Friesian"));
+    defineConstant("input_file", file_in);
+    defineConstant("output_dir", dir_out);
+    defineConstant("output_file", file_out);
+    defineConstant("starting_tick", tick);
+
+    if (Q != 1) {
+        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
+    }
+    defineConstant("recombination_rates", _recombination_rates);
+    defineConstant("recombination_ends", L-1);
+    initializeRecombinationRate(recombination_rates, recombination_ends);
+    defineConstant("metadata", Dictionary("Q", Q));
+
+    // Starting with the original 17000, even though we don't use it
+    defineConstant("ep_sizes", c(17000, 10000, 7000, 3500, 2500, 2000, 1500, 1000, 350, 250, 120, 90));
+    defineConstant("ep_lengths", c(29800, 1000, 600, 1100, 200, 300, 130, 6, 6, 6, 3, 3));
+
+    // Neutral mutations will be added later
+    // Two categories of deleterious mutations: m1 & m2
+    // One category of positive mutations: m3
+    // m1: non-coding deleterious mutations
+    // m2: coding deleterious mutations
+    // The ratio is 5:1 because we care only about the
+    // non-neutral fraction of the genome, which is enriched for coding
+    // We will also add a small number of positively selected mutations
+    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m3", 0.5, "e", Q * 0.005);
+    initializeGenomicElementType("g1", c(m1, m2, m3), c(0.83, 0.16, 0.01));
+    initializeGenomicElement(g1, 0, L-1);
+    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
+    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
+
+    defineGlobal("startE2", -1);
+    defineGlobal("startE3", -1);
+    defineGlobal("startE4", -1);
+    defineGlobal("startE5", -1);
+    defineGlobal("startE6", -1);
+    defineGlobal("startE7", -1);
+    defineGlobal("startE8", -1);
+    defineGlobal("startE9", -1);
+    defineGlobal("startE10", -1);
+    defineGlobal("startE11", -1);
+    defineGlobal("startE12", -1);
+    defineGlobal("end_tick", -1);
+}
+
+// Epoch 1
+1 late() { 
+    sim.readFromPopulationFile(file_in);
+    print("File read in");
+    for (subpop in sim.subpopulations) {
+        print(" - " + subpop.id + ": " + subpop.individualCount + " individuals");
+    }
+    // startE2 = asInteger(sim.cycle + 1);
+    startE2 = asInteger(sim.cycle + 1);
+    print("Current tick: " + sim.cycle);
+    print("startE2: " + startE2);
+}
+
+// early() {
+25001: early() {
+    // print("Loop!");
+    if (sim.cycle % 100 == 0) {
+        print("Tick " + sim.cycle);
+    }
+
+    if (sim.cycle % 10000 == 0) {
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".tick_" + sim.cycle + ".ts", metadata=metadata);
+    }
+
+    // Epoch 2
+    if (sim.cycle == startE2) {
+        p0.setSubpopulationSize(asInteger(ep_sizes[2]/Q));
+        print("Epock 2 begins - tick " + sim.cycle);
+        startE3 = asInteger(sim.cycle + ep_lengths[2]/Q);
+        print("startE3: " + startE3);
+    }
+
+    // Epoch 3
+    if (sim.cycle == startE3) {
+        // sim.outputFull(output_dir + output_file + ".ep2.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep2.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[3]/Q));
+        print("Epock 3 begins - tick " + sim.cycle);
+        startE4 = asInteger(sim.cycle + ep_lengths[3]/Q);
+    }
+
+    // Epoch 4
+    if (sim.cycle == startE4) {
+        // sim.outputFull(output_dir + output_file + ".ep3.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep3.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[4]/Q));
+        print("Epock 4 begins - tick " + sim.cycle);
+        startE5 = asInteger(sim.cycle + ep_lengths[4]/Q);
+    }
+
+    // Epoch 5
+    if (sim.cycle == startE5) {
+        // sim.outputFull(output_dir + output_file + ".ep4.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep4.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[5]/Q));
+        print("Epock 5 begins - tick " + sim.cycle);
+        startE6 = asInteger(sim.cycle + ep_lengths[5]/Q);
+    }
+
+    // Epoch 6
+    if (sim.cycle == startE6) {
+        // sim.outputFull(output_dir + output_file + ".ep5.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep5.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[6]/Q));
+        print("Epock 6 begins - tick " + sim.cycle);
+        startE7 = asInteger(sim.cycle + ep_lengths[6]/Q);
+    }
+
+    // Epoch 7
+    if (sim.cycle == startE7) {
+        // sim.outputFull(output_dir + output_file + ".ep6.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep6.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[7]/Q));
+        print("Epock 7 begins - tick " + sim.cycle);
+        startE8 = asInteger(sim.cycle + ep_lengths[7]/Q);
+    }
+
+    // Epoch 8
+    if (sim.cycle == startE8) {
+        // sim.outputFull(output_dir + output_file + ".ep7.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep7.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[8]/Q));
+        print("Epock 8 begins - tick " + sim.cycle);
+        startE9 = asInteger(sim.cycle + ep_lengths[8]/Q);
+    }
+
+    // Epoch 9
+    if (sim.cycle == startE9) {
+        // sim.outputFull(output_dir + output_file + ".ep8.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep8.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[9]/Q));
+        print("Epock 9 begins - tick " + sim.cycle);
+        startE10 = asInteger(sim.cycle + ep_lengths[9]/Q);
+    }
+
+    // Epoch 10
+    if (sim.cycle == startE10) {
+        // sim.outputFull(output_dir + output_file + ".ep9.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep9.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[10]/Q));
+        print("Epock 10 begins - tick " + sim.cycle);
+        startE11 = asInteger(sim.cycle + ep_lengths[10]/Q);
+    }
+
+    // Epoch 11
+    if (sim.cycle == startE11) {
+        // sim.outputFull(output_dir + output_file + ".ep10.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep10.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[11]/Q));
+        print("Epock 11 begins - tick " + sim.cycle);
+        startE12 = asInteger(sim.cycle + ep_lengths[11]/Q);
+    }
+
+// Epoch 12
+    if (sim.cycle == startE12) {
+        // sim.outputFull(output_dir + output_file + ".ep11.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep11.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        p0.setSubpopulationSize(asInteger(ep_sizes[12]/Q));
+        print("Epock 12 begins - tick " + sim.cycle);
+        end_tick = asInteger(sim.cycle + ep_lengths[12]/Q);
+    }
+
+    // End of simulation
+    if (sim.cycle == end_tick) {
+        // sim.outputFull(output_dir + output_file + ".full.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".full.ts", metadata=metadata);
+        sim.simulationFinished();
+    }
+}
+
+10000000 early() {
+    print("This is just a placeholder tick (slim won't run past the highest named tick). If you see this message, something is wrong.");
+}
+
+// /home/njc12/bin/slim/build/slim -m -t -l -s 20250303 -d tick=20000 -d Q_scaling=0.01 -d length=10000000 -d file_in=\"/n/scratch/users/n/njc12/sims/slim/farm_burn_in.Q_0.01.L_10000000.seed_20250303.cycle_15000.txt\" -d dir_out=\"/n/scratch/users/n/njc12/sims/slim/\" -d file_out=\"farm_selection_Q_0.01.L_10000000.seed_20250303\" farm_selection_from_e2.slim
+

@@ -1,0 +1,64 @@
+initialize() {
+    // initializeSLiMOptions(keepPedigrees=F, mutationRuns=1);
+    initializeSLiMOptions(keepPedigrees=F);
+    initializeTreeSeq();
+    defineConstant("Q", Q_scaling);
+    defineConstant("L", length);
+    defineConstant("burn_in", 0);
+    defineConstant("pop_names", c("Holstein_Friesian"));
+    defineConstant("input_file", file_in);
+    defineConstant("output_file", file_out);
+    defineConstant("output_dir", dir_out);
+
+    if (Q != 1) {
+        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
+    }
+    defineConstant("recombination_rates", _recombination_rates);
+    defineConstant("recombination_ends", L-1);
+    initializeRecombinationRate(recombination_rates, recombination_ends);
+    defineConstant("metadata", Dictionary("Q", Q));
+
+    // Neutral mutations will be added later
+    // Two categories of deleterious mutations: m1 & m2
+    // One category of positive mutations: m3
+    // m1: non-coding deleterious mutations
+    // m2: coding deleterious mutations
+    // The ratio is 5:1 because we care only about the
+    // non-neutral fraction of the genome, which is enriched for coding
+    // We will also add a small number of positively selected mutations
+    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m3", 0.5, "e", Q * 0.005);
+    initializeGenomicElementType("g1", c(m1, m2, m3), c(0.83, 0.16, 0.01));
+    initializeGenomicElement(g1, 0, L-1);
+    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
+    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
+
+}
+
+
+1 late() {
+    sim.readFromPopulationFile(file_in);
+    cat("File read in\n\tTick 000: #");
+    // sim.treeSeqRememberIndividuals(p0.individuals);
+}
+
+2: late() {
+    if (sim.cycle % 100 == 0) { 
+	cat("\n\tTick " + sim.cycle + ": ");
+    }
+    if (sim.cycle % 10 == 0) {
+        cat("#");
+    }
+    if (sim.cycle % asInteger(10/Q) == 0) {
+        // sim.treeSeqSimplify();
+        sim.treeSeqOutput(dir_out + file_out + ".cycle_" + sim.cycle + ".ts", metadata=metadata);
+    }
+}
+
+// Save equilibrated population
+asInteger(30000/Q) late() {
+    // sim.treeSeqOutput(file_out, metadata=metadata);
+    sim.treeSeqOutput(dir_out + file_out + ".ts", metadata=metadata);
+    sim.simulationFinished();
+}
