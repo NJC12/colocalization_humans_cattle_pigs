@@ -1,7 +1,10 @@
+All python and packages for this analysis are in the `comparative_colocalization.yaml` file.
+
+All other software is linked below.
+
 # Simulations
 
 Slim can be downloaded from the [Messer Lab](https://messerlab.org/slim/).
-- All python packages for the simulation are in the `comparative_colocalization.yaml` file.
 
 ## Simulating genome for human demography
 
