@@ -80,7 +80,7 @@ def get_vars_df(ts, Q=1):
         'id': [v.site.id for v in ts.variants()],
         'type': [v.site.mutations[0].metadata['mutation_list'][0]['mutation_type'] for v in ts.variants()],
         'selco': [v.site.mutations[0].metadata['mutation_list'][0]['selection_coeff'] for v in ts.variants()],
-        'daf': [sum(v.genotypes)/18000 for v in ts.variants()],
+        'daf': [sum(v.genotypes)/(2*ts.num_samples) for v in ts.variants()],
         'time': [v.site.mutations[0].time for v in ts.variants()],
         'position': [v.site.position for v in ts.variants()]
     })

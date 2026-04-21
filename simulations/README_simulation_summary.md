@@ -77,4 +77,4 @@ This simulation uses the data from "Baseline cattle population" through epoch 8,
 
 Simulate the traits using the specific mutations whose selection coefficients were changes.
 
-`python /Users/noah/colocalization_humans_cattle_pigs/simulations/create_gwas_files_and_phenotypes.py --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --cattle_ts_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24.full.ts' --cattle_m4_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24.m4_marks.tsv' --out_dir '/Users/noah/tmp/selsims/outdir/'`
+`python /Users/noah/colocalization_humans_cattle_pigs/simulations/create_gwas_files_and_phenotypes.py --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --cattle_ts_file '/Users/noah/tmp/selsims/selection_not_bottlenecked/revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24.full.ts' --cattle_m4_file '/Users/noah/tmp/selsims/selection_not_bottlenecked/revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24.m4_marks.tsv' --out_dir '/Users/noah/tmp/selsims/selection_not_bottlenecked/outputs'`
