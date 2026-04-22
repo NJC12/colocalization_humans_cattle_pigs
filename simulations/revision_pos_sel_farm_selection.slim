@@ -1,0 +1,403 @@
+// Has to be done in python
+// ts = tskit.load('input_file')
+// tables = ts.dump_tables()
+// md = tables.metadata
+// md['SLiM']['file_version'] = '0.9'
+// md['SLiM']['this_chromosome'] = {'id': 1, 'index': 0, 'symbol': 'A', 'type': 'A'}
+// md['SLiM']['chromosomes'] = [{'id': 1, 'index': 0, 'symbol': 'A', 'type': 'A'}]
+// md['SLiM']['stage'] = 'late'
+// tables.metadata = md
+// tsnew = tables.tree_sequence()
+// tsnew.dump(new_filepath)
+
+function (float)mutTypeFrequency(o<MutationType>$ mutType) {
+    muts = sim.mutationsOfType(mutType);
+    if (muts.size() > 0)
+    return sim.mutationFrequencies(NULL, muts);
+    return NULL;
+}
+function (float)estimateNe_Heterozygosity(o<Subpopulation>$ subpop) {
+    pi = calcHeterozygosity(p0.genomes);
+    return pi / (4 * MU);
+}
+function (integer)tabulateFecundity(o<Subpopulation>$ subpop, i$ previous_N) {
+    parentIDs = subpop.individuals.pedigreeParentIDs;
+    rescaledParentIDs = parentIDs - min(parentIDs);
+    return tabulate(rescaledParentIDs, previous_N - 1);
+}
+function (float)estimateNe_Inbreeding(o<Subpopulation>$ subpop) {
+    previous_N = subpop.getValue("previous_N");
+    k = tabulateFecundity(subpop, previous_N);
+    return (previous_N * mean(k) - 2) / (mean(k) - 1 + var(k) / mean(k));
+}
+
+initialize() {
+    initializeSLiMOptions(keepPedigrees=T, preventIncidentalSelfing=T);
+    // initializeTreeSeq(simplificationRatio=50);
+    initializeTreeSeq();
+    defineConstant("Q", Q_scaling);
+    defineConstant("L", genome_length);
+    defineConstant("burn_in", 0);
+    defineConstant("pop_names", c("Holstein_Friesian"));
+    defineConstant("input_file", file_in);
+    defineConstant("output_dir", dir_out);
+    defineConstant("output_file", file_out);
+    // defineConstant("starting_tick", tick); // removed
+    defineConstant("pos_muts", num_muts_selected);
+    // defineConstant("burn_in_cycles", orig_burn_in);
+    defineConstant("gen_sel", selected_generations);
+    defineConstant("selco_mult", selection_multiplier);
+    defineConstant("bottleneck", continue_bottlenecking); // 0 or 1
+
+    if (Q != 1) {
+        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
+    }
+    defineConstant("recombination_rates", _recombination_rates);
+    defineConstant("recombination_ends", L-1);
+    initializeRecombinationRate(recombination_rates, recombination_ends);
+    defineConstant("metadata", Dictionary("Q", Q));
+    defineConstant("pos_neg", c(-1, 1));
+
+    // Starting with the original 17000, even though we don't use it
+    defineConstant("ep_sizes", c(0, 17000, 10000, 7000, 3500, 2500, 2000, 1500, 1000, 350, 250, 120, 90));
+    defineConstant("ep_lengths", c(0, 29800, 1000, 600, 1100, 200, 300, 130, 6, 6, 6, 3, 3));
+    // defineConstant("ep_sizes", c(2000, 1500, 1000, 350, 250, 120, 90));
+    // defineConstant("ep_lengths", c(300, 130, 6, 6, 6, 3, 3));
+
+    // Neutral mutations will be added later
+    // Two categories of deleterious mutations: m1 & m2
+    // One category of positive mutations: m3
+    // m1: non-coding deleterious mutations
+    // m2: coding deleterious mutations
+    // The ratio is 5:1 because we care only about the
+    // non-neutral fraction of the genome, which is enriched for coding
+    // We will also add a small number of positively selected mutations
+    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m3", 0.5, "e", Q * 0.005);
+    initializeMutationType("m4", 0.5, "f", 1e-10); // new
+    initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(0.83, 0.16, 0.01, 0)); // new altered
+    initializeGenomicElement(g1, 0, L-1);
+    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
+    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
+    defineConstant("MU", Q*c(2.36e-8 / 40));
+
+    defineGlobal("startE2", -1);
+    defineGlobal("startE3", -1);
+    defineGlobal("startE4", -1);
+    defineGlobal("startE5", -1);
+    defineGlobal("startE6", -1);
+    defineGlobal("startE7", -1);
+    defineGlobal("startE8", -1);
+    defineGlobal("startE9", -1);
+    defineGlobal("startE10", -1);
+    defineGlobal("startE11", -1);
+    defineGlobal("startE12", -1);
+    defineGlobal("end_tick", -1);
+    defineGlobal("sample_tick", -1);
+}
+
+
+// Epoch 1
+1 late() { 
+    sim.readFromPopulationFile(file_in);
+    print("File read in");
+    for (subpop in sim.subpopulations) {
+        print("| subpop " + subpop.id + ": " + subpop.individualCount + " individuals");
+    }
+    p0.setValue("previous_N", p0.individualCount);
+    print("| Ne (heterozygosity): " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+
+    // THIS IS CURRENTLY HARD CODED TO START AT EPOCH 8
+    defineGlobal("startE8", sim.cycle+1);
+    defineGlobal("startE9", asInteger(startE8 + ep_lengths[8]/Q));
+    defineGlobal("startE10", asInteger(startE9 + ep_lengths[9]/Q));
+    defineGlobal("startE11", asInteger(startE10 + ep_lengths[10]/Q));
+    defineGlobal("startE12", asInteger(startE11 + ep_lengths[11]/Q));
+    defineGlobal("end_tick", asInteger(startE12 + ep_lengths[12]/Q));
+    defineGlobal("sample_tick", asInteger(end_tick - gen_sel/Q));
+
+    
+    print("| Current tick: " + sim.cycle);
+
+    // defineGlobal("sample_tick", asInteger(sim.cycle + 2));
+    // print("sample_tick: " + sample_tick);
+}
+
+25001: late() {
+    p0.setValue("previous_N", p0.individualCount);
+    if (sim.cycle == sample_tick) {
+        print("| Sampling at tick " + sim.cycle);
+
+        if (pos_muts >= 1) {
+            chosen = sample(sim.mutations, min(pos_muts, size(sim.mutations)));
+        } else if (pos_muts >= 0) {
+            chosen = sample(sim.mutations, min(asInteger(size(sim.mutations) * pos_muts), size(sim.mutations)));
+        } else {
+            print("You messed up the --num_selected_mutations");
+        }
+        print("| m4 selection coefficients:");
+        for (mut in chosen) {
+	    s_orig = mut.selectionCoeff;
+            s = min(mut.selectionCoeff * selco_mult * sample(pos_neg, 1), 1.0);
+            mut.setMutationType(m4);
+            mut.setSelectionCoeff(s);
+            print("|     " + s_orig + " -> " + s);
+        }
+        // for (mut in chosen) {
+        //     s = mut.selectionCoeff;
+        //     print("  before: type=" + mut.mutationType.id + " s=" + s);
+        //     mut.setMutationType(m4);
+        //     print("  after setMutationType: type=" + mut.mutationType.id);
+        //     mut.setSelectionCoeff(s * selco_mult * sample(pos_neg, 1));
+        //     print("  after setSelectionCoeff: s=" + mut.selectionCoeff);
+        // }
+
+        // print("sim.mutations size: " + size(sim.mutations));
+        // print("m4 count: " + sim.countOfMutationsOfType(m4));
+        // print("m4 in sim.mutations: " + sum(sim.mutations.mutationType == m4));
+
+        // sim.recalculateFitness();
+
+        lines = sapply(chosen,
+                    "applyValue.position + '\t' + applyValue.selectionCoeff;");
+        writeFile(output_dir + output_file + ".m4_marks.tsv",
+                c("position\tselection_coeff", lines));
+
+        print("| Marked " + size(chosen) + " mutations for m4 relabeling");
+    
+    }
+}
+
+// early() {
+25001: early() { // Not sure what I'll have to change this to.
+// 434801: early() {
+    // print("Loop!");
+
+    if (sim.cycle % 100 == 0) {
+        print("| Tick " + sim.cycle);
+        // print("|     Ne (inbreeding):     " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("|     Ne (heterozygosity): " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+        print("|     m4 count:            " + sum(sim.mutations.mutationType == m4));
+    }
+
+    // if (sim.cycle % 10000 == 0) {
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".tick_" + sim.cycle + ".ts", metadata=metadata);
+    // }
+
+    // // Epoch 2
+    // if (sim.cycle == startE2) {
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[2]/Q));
+    //     print("Epoch 2 begins - tick " + sim.cycle);
+    //     // startE3 = asInteger(sim.cycle + ep_lengths[2]/Q);
+    //     // defineGlobal("startE3", asInteger(sim.cycle + ep_lengths[2]/Q));
+    //     // print("startE3: " + startE3);
+    // }
+
+    // // Epoch 3
+    // if (sim.cycle == startE3) {
+    //     // sim.outputFull(output_dir + output_file + ".ep2.txt", binary=T);
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".ep2.ts", metadata=metadata);
+    //     // sim.treeSeqSimplify();
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[3]/Q));
+    //     print("Epoch 3 begins - tick " + sim.cycle);
+    //     // startE4 = asInteger(sim.cycle + ep_lengths[3]/Q);
+    //     // defineGlobal("startE4", asInteger(sim.cycle + ep_lengths[3]/Q));
+    // }
+
+    // // Epoch 4
+    // if (sim.cycle == startE4) {
+    //     // sim.outputFull(output_dir + output_file + ".ep3.txt", binary=T);
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".ep3.ts", metadata=metadata);
+    //     // sim.treeSeqSimplify();
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[4]/Q));
+    //     print("Epoch 4 begins - tick " + sim.cycle);
+    //     // startE5 = asInteger(sim.cycle + ep_lengths[4]/Q);
+    //     // defineGlobal("startE5", asInteger(sim.cycle + ep_lengths[4]/Q));
+    // }
+
+    // // Epoch 5
+    // if (sim.cycle == startE5) {
+    //     // sim.outputFull(output_dir + output_file + ".ep4.txt", binary=T);
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".ep4.ts", metadata=metadata);
+    //     // sim.treeSeqSimplify();
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[5]/Q));
+    //     print("Epoch 5 begins - tick " + sim.cycle);
+    //     // startE6 = asInteger(sim.cycle + ep_lengths[5]/Q);
+    //     // defineGlobal("startE6", asInteger(sim.cycle + ep_lengths[5]/Q));
+    // }
+
+    // // Epoch 6
+    // if (sim.cycle == startE6) {
+    //     // sim.outputFull(output_dir + output_file + ".ep5.txt", binary=T);
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".ep5.ts", metadata=metadata);
+    //     // sim.treeSeqSimplify();
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[6]/Q));
+    //     print("Epock 6 begins - tick " + sim.cycle);
+    //     // startE7 = asInteger(sim.cycle + ep_lengths[6]/Q);
+    //     // defineGlobal("startE7", asInteger(sim.cycle + ep_lengths[6]/Q));
+    // }
+
+    // // Epoch 7
+    // if (sim.cycle == startE7) {
+    //     // sim.outputFull(output_dir + output_file + ".ep6.txt", binary=T);
+    //     sim.treeSeqSimplify();
+    //     sim.treeSeqOutput(output_dir + output_file + ".ep6.ts", metadata=metadata);
+    //     // sim.treeSeqSimplify();
+    //     p0.setSubpopulationSize(asInteger(ep_sizes[7]/Q));
+    //     print("Epoch 7 begins - tick " + sim.cycle);
+    //     // startE8 = asInteger(sim.cycle + ep_lengths[7]/Q);
+    //     // defineGlobal("startE8", asInteger(sim.cycle + ep_lengths[7]/Q));
+    // }
+
+    // Epoch 8
+    if (sim.cycle == startE8) {
+        // sim.outputFull(output_dir + output_file + ".ep7.txt", binary=T);
+        sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".ep7.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        print("-----Epoch 8 begins - tick " + sim.cycle + "-----");
+        // if (bottleneck == 1) {
+        if (1 == 1) { // When starting in epoch 8, always bottleneck 8
+            p0.setSubpopulationSize(asInteger(ep_sizes[8]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE9 = asInteger(sim.cycle + ep_lengths[8]/Q);
+        // defineGlobal("startE9", asInteger(sim.cycle + ep_lengths[8]/Q));
+        print("| Length will be: " + ep_lengths[8]);
+    }
+
+    if (sim.cycle == startE8 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding):        " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+    // Epoch 9
+    if (sim.cycle == startE9) {
+        // sim.outputFull(output_dir + output_file + ".ep8.txt", binary=T);
+        // sim.treeSeqSimplify();
+        // sim.treeSeqOutput(output_dir + output_file + ".ep8.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        print("-----Epoch 9 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[9]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE10 = asInteger(sim.cycle + ep_lengths[9]/Q);
+        // defineGlobal("startE10", asInteger(sim.cycle + ep_lengths[9]/Q));
+        print("| Length will be: " + ep_lengths[9]);
+    }
+
+    if (sim.cycle == startE9 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding): " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // Epoch 10
+    if (sim.cycle == startE10) {
+        // sim.outputFull(output_dir + output_file + ".ep9.txt", binary=T);
+        // sim.treeSeqSimplify();
+        // sim.treeSeqOutput(output_dir + output_file + ".ep9.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        print("-----Epoch 10 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[10]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE11 = asInteger(sim.cycle + ep_lengths[10]/Q);
+        // defineGlobal("startE11", asInteger(sim.cycle + ep_lengths[10]/Q));
+        print("| Length will be: " + ep_lengths[10]);
+    }
+
+    if (sim.cycle == startE10 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding): " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // Epoch 11
+    if (sim.cycle == startE11) {
+        // sim.outputFull(output_dir + output_file + ".ep10.txt", binary=T);
+        // sim.treeSeqSimplify();
+        // sim.treeSeqOutput(output_dir + output_file + ".ep10.ts", metadata=metadata);
+        print("-----Epoch 11 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[11]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE12 = asInteger(sim.cycle + ep_lengths[11]/Q);
+        // defineGlobal("startE12", asInteger(sim.cycle + ep_lengths[11]/Q));
+        print("| Length will be: " + ep_lengths[11]);
+    }
+
+    if (sim.cycle == startE11 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding): " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+// Epoch 12
+    if (sim.cycle == startE12) {
+        print("Starting ep12");
+        // sim.outputFull(output_dir + output_file + ".ep11.txt", binary=T);
+        // sim.treeSeqSimplify();
+        // sim.treeSeqOutput(output_dir + output_file + ".ep11.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        print("-----Epoch 12 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[12]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // end_tick = asInteger(sim.cycle + ep_lengths[12]/Q);
+        // defineGlobal("end_tick", asInteger(sim.cycle + ep_lengths[12]/Q));
+        print("| Length will be: " + ep_lengths[12]);
+    }
+
+    if (sim.cycle == startE12 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding): " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // End of simulation
+    if (sim.cycle == end_tick) {
+        // sim.outputFull(output_dir + output_file + ".full.txt", binary=T);
+        sim.treeSeqSimplify();
+        print("-----Ending-----");
+        // print("m1 count: " + sim.countOfMutationsOfType(m1));
+        // print("m2 count: " + sim.countOfMutationsOfType(m2));
+        // print("m3 count: " + sim.countOfMutationsOfType(m3));
+        // print("m4 count: " + sim.countOfMutationsOfType(m4));
+        sim.treeSeqOutput(output_dir + output_file + ".full.ts", metadata=metadata);
+        sim.simulationFinished();
+    }
+}
+
+10000000 early() {
+    print("This is just a placeholder tick (slim won't run past the highest named tick). If you see this message, something is wrong.");
+}
+
+// cd /n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/scripts
+// /home/njc12/bin/slim/build/slim -m -t -l -s 20250303 -d selection_multiplier=4 -d selected_generations=50 -d num_muts_selected=100 -d Q_scaling=0.01 -d length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_11.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"test_farm_selection_selgen_10_foldsel_10\" revision_pos_sel_farm_selection.slim
+// /home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=1000 -d selected_generations=23 -d continue_bottlenecking=0 -d num_muts_selected=0.01 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_1000_gen_23_muts_0.01_not_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim

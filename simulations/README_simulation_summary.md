@@ -59,9 +59,7 @@ Create the GWAS and GTEx data.
 
 This simulation uses the data from "Baseline cattle population" through epoch 8, at which point it changes the selection.
 
-`mult=100`
-
-`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=1 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_${mult}_gen_23_muts_26_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
+`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=1 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
 
 Simulate the traits using the specific mutations whose selection coefficients were changes.
 
@@ -71,9 +69,7 @@ Simulate the traits using the specific mutations whose selection coefficients we
 
 This simulation uses the data from "Baseline cattle population" through epoch 8, at which point it changes the selection.
 
-`mult=100`
-
-`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=0 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_${mult}_gen_23_muts_26_not_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
+`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=0 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
 
 Simulate the traits using the specific mutations whose selection coefficients were changes.
 
