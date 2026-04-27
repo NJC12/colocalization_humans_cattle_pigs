@@ -77,13 +77,15 @@ Steps
 - Reformat names in with `for fl in $(ls); do outfl=$(echo $fl | sed -r 's/35.0/35/g'); mv $fl $outfl; done`
 - Convert dap-g format to fastEnloc format using the built-in fastEnloc script `dap2enloc`
 - `~/bin/fastenloc/utility/dap2enloc -dir cgtex/outputs/ -vcf vcf/cgtex.dap.vcf.gz | gzip - > cgtex_scaling_35.dap.annotation.vcf.gz`
+    - If the output is empty, this may be due to a mismatch in SNP IDs. A simple solution is to just made each SNP ID its position.
+    - `~/bin/fastenloc/utility/dap2enloc -dir cgtex/outputs/ -vcf <(zcat vcf/cgtex.dap.vcf.gz | awk 'BEGIN{OFS="\t"} {$3=$2; print $0}' | gzip) | gzip - > cgtex_scaling_35.dap.annotation.vcf.gz`
 - This produces files ending in `.dap.annotation.vcf.gz`
 - We then run fastEnloc using the commands
 - Cattle demography: `fastenloc -eqtl cgtex_scaling_35.dap.annotation.vcf.gz -gwas cgwas_scaling_35.dap.annotation.vcf.gz -total_variants [see below]`
 - Human demography: `fastenloc -eqtl hgtex_scaling_35.dap.annotation.vcf.gz -gwas hgwas_scaling_35.dap.annotation.vcf.gz -total_variants [see below]`
-- The total number of variants is the number of variants shared by the GWAS and eQTL files, and can be found with a few command line tools.
-- `comm -12 <(cgtex_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) <(cgwas_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) | wc -l`
-- `comm -12 <(hgtex_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) <(hgwas_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) | wc -l`
+- The total number of variants is the number of variants shared by the GWAS and eQTL files, and can be found with a few command line tools. (Some systems require `zcat` instead of `gzcat`)
+- `comm -12 <(gzcat cgtex_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) <(gzcat cgwas_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) | wc -l`
+- `comm -12 <(gzcat hgtex_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) <(gzcat hgwas_scaling_35.dap.annotation.vcf.gz | awk 'NR > 1 {print $3}' | sort | uniq) | wc -l`
 
 # Figures
 
