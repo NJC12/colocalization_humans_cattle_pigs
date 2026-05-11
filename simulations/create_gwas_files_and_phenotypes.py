@@ -94,37 +94,72 @@ def get_vars_df(ts, Q=1):
     
     return tree
 
-def generate_phenos_from_pos(position, ts, vars, scaling=1):
-    site_id = vars[vars['position'] == position]['id']
+def build_redistribution_map(donor_positions, recipient_positions, seed):
+    # Pair each non-zero-selco donor position with a distinct neutral-selco
+    # recipient. Sampling is seeded by `seed` for determinism. If fewer
+    # recipients exist than donors, donors are randomly truncated so the
+    # pairing is one-to-one. Returns (donors_kept, {donor: recipient}).
+    rng = np.random.default_rng(seed)
+    donors = sorted(int(p) for p in donor_positions)
+    recipients = sorted(int(p) for p in recipient_positions)
+    n_keep = min(len(donors), len(recipients))
+    if n_keep < len(donors):
+        kept_idx = rng.choice(len(donors), size=n_keep, replace=False)
+        donors_kept = [donors[i] for i in sorted(kept_idx.tolist())]
+    else:
+        donors_kept = donors
+    chosen_recipients = rng.choice(recipients, size=n_keep, replace=False)
+    return donors_kept, dict(zip(donors_kept, chosen_recipients.tolist()))
+
+def attach_beta(vars_df, key_df):
+    # Add a 'beta' column to vars_df from the per-trait key DataFrame.
+    # key_df['position'] is the recipient position (it's what tstrait wrote
+    # the effect on), so a left merge places the signed beta on the
+    # recipient row. Non-recipient rows get 0.
+    key_lite = key_df[['position', 'effect_size']].rename(columns={'effect_size': 'beta'})
+    key_lite['position'] = key_lite['position'].astype(float)
+    out = vars_df.merge(key_lite, on='position', how='left')
+    out['beta'] = out['beta'].fillna(0.0)
+    return out
+
+def generate_phenos_from_pos(position, ts, vars, scaling=1, recipient_position=None):
+    # Donor (`position`) determines the magnitude of beta via its selco;
+    # recipient determines which site the effect lands on, the trait id,
+    # and the seed used for `tstrait`'s random sign draw (so GWAS and GTEx
+    # pick the same sign).
+    if recipient_position is None:
+        recipient_position = position
+    site_id = vars[vars['position'] == recipient_position]['id']
     site_id = int(site_id.iloc[0])
     selco = vars[vars['position'] == position]['selco']
     selco = float(selco.iloc[0])
     # beta = selco_to_beta(selco)
     beta = np.sqrt(np.abs(selco)) * scaling
-    position = int(position)
+    recipient_position = int(recipient_position)
 
-    pheno = tstrait.sim_phenotype(ts, model=tstrait.TraitModelFixed(beta, random_sign=True), causal_sites=[site_id], h2=1, random_seed=position)
+    pheno = tstrait.sim_phenotype(ts, model=tstrait.TraitModelFixed(beta, random_sign=True), causal_sites=[site_id], h2=1, random_seed=recipient_position)
     pheno.phenotype['environmental_noise'] = np.random.normal(0, 1, pheno.phenotype.shape[0])
-    pheno.phenotype['trait_id'] = 'tr' + str(int(position))
-    pheno.trait['trait_id'] = 'tr' + str(int(position))
+    pheno.phenotype['trait_id'] = 'tr' + str(int(recipient_position))
+    pheno.trait['trait_id'] = 'tr' + str(int(recipient_position))
     pheno.phenotype['phenotype'] = pheno.phenotype['genetic_value'] + pheno.phenotype['environmental_noise']
 
     return pheno
 
-def combine_phenos_to_df(positions, ts, vars, scaling):
+def combine_phenos_to_df(positions, ts, vars, scaling, redistribution=None):
     id_list = ['tsk_' + str(x.id) for x in ts.individuals()]
     phenos = pd.DataFrame({'FID': 0, 'IID': id_list})
     snp_key = pd.DataFrame({'position': [], 'site_id': [], 'effect_size': [], 'causal_allele': [], 'allele_freq': [], 'trait_id': []})
 
     for pos in positions['position']:
-        tr = generate_phenos_from_pos(pos, ts, vars, scaling)
+        recipient = redistribution.get(int(pos)) if redistribution else None
+        tr = generate_phenos_from_pos(pos, ts, vars, scaling, recipient_position=recipient)
         tr_id = tr.trait.trait_id.iloc[0]
         tr_vals = tr.phenotype.phenotype
         # phenos[tr_id] = tr_vals
         # phenos = pd.concat([phenos, pd.DataFrame({'fid': 0, 'iid': id_list, tr_id: tr_vals})], axis=1)
         phenos = pd.concat([phenos, pd.DataFrame({tr_id: tr_vals})], axis=1)
         snp_key = pd.concat([snp_key, tr.trait])
-    
+
     return snp_key, phenos
 
 def write_ts_as_sbams(ts, output_path):
@@ -261,8 +296,10 @@ def get_arguments():
     parser.add_argument('--cattle_m4_file', type=str, help='A file keeping track of the cattle variants under intense agricultural selection')
     parser.add_argument('--out_dir', type=str)
     parser.add_argument('--n_samples', type=float, required=False, default=None, help='The number of individuals in the GTEx sample and GWAS sample combined (default is the full number of simulated individuals)')
-    parser.add_argument('--gtex_size', type=float, required=False, default=500, help='The number of individuals in the GTEx sample (default 500)')
+    parser.add_argument('--gtex_size', type=float, required=False, default=500, help='The number of individuals in the GTEx sample (default 500; -1 creates outputs of 1k, 500, and 250)')
     parser.add_argument('--already_includes_neutral', type=bool, required=False, default=False, help='Only needed if you already added neutral mutations in the input data')
+    parser.add_argument('--seed', type=int, default=19930224)
+    parser.add_argument('--neutral_trait_vars', type=bool, required=False, default=False, help='Redistribute each non-zero effect size from its causal (selco != 0) donor variant to a random eligible neutral (selco == 0) recipient. Trait IDs are named for the recipient position. The redistribution is identical across GWAS and GTEx samples and is seeded by --seed.')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -272,6 +309,13 @@ if __name__ == '__main__':
     gtex_scaling = args.gtex_scaling
     r2_value = args.r2_value
     min_maf = args.min_maf
+    gtex_size = args.gtex_size
+
+    if gtex_size < 0:
+        multiple_gtex_outputs = True
+        gtex_size = 1000
+    else:
+        multiple_gtex_outputs = False
 
     run_hums = not args.human_ts_file is None
     run_cows = not args.cattle_ts_file is None
@@ -284,36 +328,59 @@ if __name__ == '__main__':
         if args.cattle_m4_file is not None:
             cows = relabel_ag_variants(cows, args.cattle_m4_file)
         print('Cattle demography')
-        cows = remove_fixed(add_neutral(cows, Q=100, seed=20250303))
+        cows = remove_fixed(add_neutral(cows, Q=100, seed=args.seed))
         cows = pyslim.convert_alleles(pyslim.generate_nucleotides(cows))
     if run_hums:
         # hums = tskit.load('/Users/noah/comparative_colocalization/data/simulations/demographic_simulations/human/human_selection_Q_1.L10000000.seed_20250521.full.ts')
         hums = tskit.load(args.human_ts_file)
         print('Human demography')
         if not args.already_includes_neutral:
-            hums = remove_fixed(add_neutral(hums, seed=20250521))
+            hums = remove_fixed(add_neutral(hums, seed=args.seed))
             hums = pyslim.convert_alleles(pyslim.generate_nucleotides(hums))
 
     # Split into GWAS and GTEx
     print('Splitting into GWAS and GTEx')
-    # n_samples = 9000
     n_samples = args.n_samples
+    hgtex_subsamples = {}
+    cgtex_subsamples = {}
     if run_hums:
         if n_samples is None:
             n_samples = hums.num_individuals
         print('Human samples: ' + str(n_samples))
-        samps = [i for i in range(0, 2*n_samples, int(n_samples/(args.gtex_size/2)))] + [i+1 for i in range(0, 2*n_samples, int(n_samples/(args.gtex_size/2)))]
+        samps = [i for i in range(0, 2*n_samples, int(n_samples/(gtex_size/2)))] + [i+1 for i in range(0, 2*n_samples, int(n_samples/(gtex_size/2)))]
         samps.sort()
         hgtex = hums.simplify(hums.samples()[samps])
         hgwas = hums.simplify(hums.samples()[[i for i in range(0, 2*n_samples,) if i not in samps]])
+        if multiple_gtex_outputs:
+            # Sub-sample 500 individuals into hgtex_smaller and 250 into hgtex_smallest from
+            # the 1000-individual hgtex. Same paired-haplotype stride pattern as the gwas/gtex
+            # split (pull haplotypes (i, i+1) at a stride determined by the target sample size)
+            # so each retained individual still has both chromosomes.
+            for sub_size, sub_name in [(500, 'hgtex_smaller'), (250, 'hgtex_smallest')]:
+                step = int(1000 / (sub_size / 2))
+                sub_samps = [i for i in range(0, 2*1000, step)] + [i+1 for i in range(0, 2*1000, step)]
+                sub_samps.sort()
+                hgtex_subsamples[sub_name] = {
+                    'ts': hgtex.simplify(hgtex.samples()[sub_samps]),
+                    'retained_inds': [s // 2 for s in sub_samps[::2]],
+                }
     if run_cows:
         if n_samples is None:
             n_samples = cows.num_individuals
         print('Cattle samples: ' + str(n_samples))
-        samps = [i for i in range(0, 2*n_samples, int(n_samples/(args.gtex_size/2)))] + [i+1 for i in range(0, 2*n_samples, int(n_samples/(args.gtex_size/2)))]
+        samps = [i for i in range(0, 2*n_samples, int(n_samples/(gtex_size/2)))] + [i+1 for i in range(0, 2*n_samples, int(n_samples/(gtex_size/2)))]
         samps.sort()
         cgtex = cows.simplify(cows.samples()[samps])
         cgwas = cows.simplify(cows.samples()[[i for i in range(0, 2*n_samples,) if i not in samps]])
+        if multiple_gtex_outputs:
+            for sub_size, sub_name in [(500, 'cgtex_smaller'), (250, 'cgtex_smallest')]:
+                step = int(1000 / (sub_size / 2))
+                sub_samps = [i for i in range(0, 2*1000, step)] + [i+1 for i in range(0, 2*1000, step)]
+                sub_samps.sort()
+                cgtex_subsamples[sub_name] = {
+                    'ts': cgtex.simplify(cgtex.samples()[sub_samps]),
+                    'retained_inds': [s // 2 for s in sub_samps[::2]],
+                }
 
     # Get the variants
     print('Getting variants')
@@ -322,11 +389,17 @@ if __name__ == '__main__':
         cgwas_vars = get_vars_df(cgwas, Q=100)
         cgtex_vars = get_vars_df(cgtex, Q=100)
         print('Number of cattle vars: ' + str(len(cvars)))
+        for name, data in cgtex_subsamples.items():
+            data['vars'] = get_vars_df(data['ts'], Q=100)
+            print(f'Number of {name} vars: ' + str(len(data['vars'])))
     if run_hums:
         hvars = get_vars_df(hums)
         hgwas_vars = get_vars_df(hgwas)
         hgtex_vars = get_vars_df(hgtex)
         print('Number of human vars: ' + str(len(hvars)))
+        for name, data in hgtex_subsamples.items():
+            data['vars'] = get_vars_df(data['ts'])
+            print(f'Number of {name} vars: ' + str(len(data['vars'])))
 
     # Select the relevant alleles
     print('Selecting relevant alleles')
@@ -341,14 +414,45 @@ if __name__ == '__main__':
         print(f'Number of causative cattle variants: {ccausative_maf01.shape[0]}')
         ccausative_maf01 = ccausative_maf01[ccausative_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
 
+    # If --neutral_trait_vars is set, redistribute each non-zero effect from
+    # its selco != 0 donor to a random selco == 0 recipient. Recipients are
+    # filtered identically to donors (MAF in GWAS + position window + GTEx
+    # cross-check). With fewer recipients than donors, donors are randomly
+    # truncated (seeded by --seed) so the pairing stays one-to-one.
+    hredist = credist = None
+    if args.neutral_trait_vars:
+        if run_hums:
+            hneutral_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] == 0) & (hgwas_vars['position'] > 5e5) & (hgwas_vars['position'] < 9.5e6) & (hgwas_vars.position.isin(hgtex_vars.position))]
+            hneutral_maf01 = hneutral_maf01[hneutral_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= min_maf, axis=1)]
+            hkept, hredist = build_redistribution_map(hcausative_maf01['position'], hneutral_maf01['position'], seed=args.seed)
+            print(f'Human donors: {len(hcausative_maf01)}, neutral recipients: {len(hneutral_maf01)}, paired: {len(hkept)}')
+            hcausative_maf01 = hcausative_maf01[hcausative_maf01['position'].astype(int).isin(hkept)]
+        if run_cows:
+            cneutral_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] == 0) & (cgwas_vars['position'] > 5e5) & (cgwas_vars['position'] < 9.5e6) & (cgwas_vars.position.isin(cgtex_vars.position))]
+            cneutral_maf01 = cneutral_maf01[cneutral_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
+            ckept, credist = build_redistribution_map(ccausative_maf01['position'], cneutral_maf01['position'], seed=args.seed)
+            print(f'Cattle donors: {len(ccausative_maf01)}, neutral recipients: {len(cneutral_maf01)}, paired: {len(ckept)}')
+            ccausative_maf01 = ccausative_maf01[ccausative_maf01['position'].astype(int).isin(ckept)]
+
     # Creating phenotypes
     print('Creating phenotypes')
     if run_cows:
-        cgwas_key_maf01, cgwas_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgwas, cgwas_vars, scaling=gwas_scaling)
-        cgtex_key_maf01, cgtex_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgtex, cgtex_vars, scaling=gtex_scaling)
+        cgwas_key_maf01, cgwas_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgwas, cgwas_vars, scaling=gwas_scaling, redistribution=credist)
+        cgtex_key_maf01, cgtex_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgtex, cgtex_vars, scaling=gtex_scaling, redistribution=credist)
+        for name, data in cgtex_subsamples.items():
+            sub_traits = cgtex_traits_maf01.iloc[data['retained_inds']].copy().reset_index(drop=True)
+            sub_traits['IID'] = ['tsk_' + str(i) for i in range(len(sub_traits))]
+            data['traits'] = sub_traits
     if run_hums:
-        hgwas_key_maf01, hgwas_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgwas, hgwas_vars, scaling=gwas_scaling)
-        hgtex_key_maf01, hgtex_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgtex, hgtex_vars, scaling=gtex_scaling)
+        hgwas_key_maf01, hgwas_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgwas, hgwas_vars, scaling=gwas_scaling, redistribution=hredist)
+        hgtex_key_maf01, hgtex_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgtex, hgtex_vars, scaling=gtex_scaling, redistribution=hredist)
+        # For subsamples, take the simulated trait rows of the retained individuals.
+        # Same simulated outcomes, just observed in fewer individuals (power-analysis setup).
+        # Renumber IIDs so they match the re-indexed individuals in each subsampled VCF (tsk_0..tsk_N-1).
+        for name, data in hgtex_subsamples.items():
+            sub_traits = hgtex_traits_maf01.iloc[data['retained_inds']].copy().reset_index(drop=True)
+            sub_traits['IID'] = ['tsk_' + str(i) for i in range(len(sub_traits))]
+            data['traits'] = sub_traits
 
     # Write everything out
     print('Writing everything out')
@@ -358,8 +462,8 @@ if __name__ == '__main__':
         os.makedirs(sim_dir)
 
     if run_cows:
-        cgwas_vars.to_csv(f'{sim_dir}/cgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        cgtex_vars.to_csv(f'{sim_dir}/cgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(cgwas_vars, cgwas_key_maf01).to_csv(f'{sim_dir}/cgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(cgtex_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/cgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
         cgwas_traits_maf01.to_csv(f'{sim_dir}/cgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
         cgtex_traits_maf01.to_csv(f'{sim_dir}/cgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
 
@@ -384,9 +488,20 @@ if __name__ == '__main__':
         cgwas_traits_maf01.to_csv(f'{sim_dir}/cgwas_traits.scaling_{gwas_scaling}.pheno', sep='\t', index=False)
         cgtex_traits_maf01.to_csv(f'{sim_dir}/cgtex_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
 
+        for name, data in cgtex_subsamples.items():
+            sub_ts, sub_traits, sub_vars = data['ts'], data['traits'], data['vars']
+            attach_beta(sub_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            with open(f'{sim_dir}/{name}.vcf', 'w') as f:
+                sub_ts.write_vcf(f)
+            write_ts_as_sbams(sub_ts, f'{sim_dir}/{name}_scaling_{gtex_scaling}_geno.sbams')
+            write_traits_as_sbams(sub_traits, f'{sim_dir}/{name}_scaling_{gtex_scaling}_pheno.sbams')
+            create_pca(sub_ts).to_csv(f'{sim_dir}/{name}.pca', sep='\t', header=False, index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
+
     if run_hums:
-        hgwas_vars.to_csv(f'{sim_dir}/hgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        hgtex_vars.to_csv(f'{sim_dir}/hgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(hgwas_vars, hgwas_key_maf01).to_csv(f'{sim_dir}/hgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(hgtex_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/hgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
         hgwas_traits_maf01.to_csv(f'{sim_dir}/hgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
         hgtex_traits_maf01.to_csv(f'{sim_dir}/hgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
 
@@ -409,6 +524,17 @@ if __name__ == '__main__':
 
         hgwas_traits_maf01.to_csv(f'{sim_dir}/hgwas_traits.scaling_{gwas_scaling}.pheno', sep='\t', index=False)
         hgtex_traits_maf01.to_csv(f'{sim_dir}/hgtex_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
+
+        for name, data in hgtex_subsamples.items():
+            sub_ts, sub_traits, sub_vars = data['ts'], data['traits'], data['vars']
+            attach_beta(sub_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            with gzip.open(f'{sim_dir}/{name}.vcf.gz', 'wt') as f:
+                sub_ts.write_vcf(f)
+            write_ts_as_sbams(sub_ts, f'{sim_dir}/{name}_scaling_{gtex_scaling}_geno.sbams')
+            write_traits_as_sbams(sub_traits, f'{sim_dir}/{name}_scaling_{gtex_scaling}_pheno.sbams')
+            create_pca(sub_ts).to_csv(f'{sim_dir}/{name}.pca', sep='\t', header=False, index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
 
     # Write out a long string to the file sim_dir/gwas_scaling_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.txt
     with open(f'{sim_dir}/gwas_scaling_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.txt', 'w') as f:

@@ -1,0 +1,50 @@
+# Cattle simulation with positive selection on chosen variants, WITHOUT
+# continued bottlenecking through the late epochs.
+
+pipeline: cattle_sel
+species: cattle
+basename: cattle_sel_nobot
+species_prefix: c
+
+# ---- Selection parameters (visible at a glance) ----
+Q_scaling: 0.01
+L: 10000000
+selection_multiplier: 100
+selected_generations: 23
+num_muts_selected: 26
+continue_bottlenecking: 0
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: 1000
+
+# ---- Per-stage seeds ----
+cattle_baseline_seed: 20250303
+stage1_seed: 24
+stage2_seed: 19930224
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+cattle_baseline_search_dirs:
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+# Intentionally empty: every cattle+selection run must start by re-running the
+# farm_selection_from_ep8.slim job (with num_muts_selected > 0) from the
+# epoch_8 checkpoint (found via cattle_baseline_search_dirs above). Listing
+# pre-computed .full.ts files here would short-circuit that and reuse them.
+stage1_search_dirs: []
+stage2_search_dirs:
+  - /Users/noah/tmp/selsims/selection_not_bottlenecked/outputs
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto    # "auto" = intersection of gwas+gtex annotation VCF SNP IDs; or set an int
+already_includes_neutral: True
+
+# ---- Workdir / publish ----
+workdir: /n/scratch/users/n/njc12/snakemake/cattle_sel_nobot
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/cattle_sel_nobot

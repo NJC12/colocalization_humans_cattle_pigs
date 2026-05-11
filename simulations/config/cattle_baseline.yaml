@@ -1,0 +1,48 @@
+# Cattle baseline simulation (no agricultural-selection multiplier; just the
+# 3-stage SLiM chain that produces farm_selection.*.full.ts).
+
+pipeline: cattle_baseline
+species: cattle
+basename: cattle_baseline
+species_prefix: c
+
+# ---- Selection / demography parameters ----
+Q_scaling: 0.01
+L: 10000000
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: 1000
+
+# ---- Per-stage seeds ----
+stage1_seed: 20250303
+stage2_seed: 20250303
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+cattle_baseline_search_dirs:
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/burn_in
+  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
+stage1_search_dirs:
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp
+  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
+stage2_search_dirs: []
+
+# ---- Burn-in cycle to use as input to farm_selection.slim ----
+burn_in_cycle: 25000
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto    # "auto" = intersection of gwas+gtex annotation VCF SNP IDs; or set an int
+already_includes_neutral: True
+
+# ---- Workdir / publish ----
+workdir: /n/scratch/users/n/njc12/snakemake/cattle_baseline
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/cattle_baseline

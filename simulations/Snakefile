@@ -1,0 +1,265 @@
+# Top-level Snakefile.
+#
+# Run with one of:
+#   snakemake --configfile config/human.yaml ...
+#   snakemake --configfile config/cattle_baseline.yaml ...
+#   snakemake --configfile config/cattle_sel_bottlenecked.yaml ...
+#   snakemake --configfile config/cattle_sel_not_bottlenecked.yaml ...
+#
+# The dispatcher includes the right stage-1 module based on
+# `config["pipeline"]`, then includes the shared common rules. The default
+# target (`rule all`) requests the stage-4 + stage-5 outputs.
+
+import os
+import sys
+
+# Make ./helpers importable so rule modules can use search_dirs.find_or_canonical.
+SIM_REPO_DIR = os.path.dirname(os.path.abspath(workflow.snakefile))
+sys.path.insert(0, SIM_REPO_DIR)
+
+from helpers import paths, search_dirs
+
+
+# ---------- config validation + defaults ----------
+
+REQUIRED_KEYS = [
+    "pipeline", "species", "basename",
+    "Q_scaling", "L", "min_maf", "gwas_scaling", "gtex_scaling", "gtex_size", "gwas_size",
+    "stage1_seed", "workdir",
+]
+for k in REQUIRED_KEYS:
+    if k not in config:
+        raise ValueError(f"Missing required config key: {k}")
+
+if config["pipeline"] not in {"human", "cattle_baseline", "cattle_baseline_from_midpoint", "cattle_sel"}:
+    raise ValueError(f"Unknown pipeline: {config['pipeline']!r}")
+
+if config["pipeline"] == "cattle_sel":
+    for k in ("selection_multiplier", "selected_generations", "num_muts_selected",
+              "continue_bottlenecking", "cattle_baseline_seed"):
+        if k not in config:
+            raise ValueError(f"cattle_sel pipeline requires config key: {k}")
+
+if config["pipeline"] == "cattle_baseline_from_midpoint":
+    if "cattle_baseline_seed" not in config:
+        raise ValueError(
+            "cattle_baseline_from_midpoint pipeline requires config key: cattle_baseline_seed"
+        )
+
+# Defaults
+config.setdefault("already_includes_neutral", True)
+config.setdefault("neutral_trait_vars", False)
+config.setdefault("ld_ctrl", 0.75)
+config.setdefault("dapg_window", 1_000_000)
+config.setdefault("fastenloc_total_snps", "auto")
+
+# O2-specific binary defaults. Override in YAML for other hosts.
+config.setdefault("python_binary",   "/home/njc12/miniconda3/envs/coloc_sims/bin/python")
+config.setdefault("slim_binary",     "/home/njc12/bin/slim/build/slim")
+config.setdefault("dapg_binary",     "/n/data2/hms/dbmi/sunyaev/lab/nconnally/bin/dap/dap_src/dap-g")
+config.setdefault("tabix_binary",    "/n/data2/hms/dbmi/sunyaev/lab/nconnally/bin/htslib-1.23.1/tabix")
+config.setdefault("bgzip_binary",    "/n/data2/hms/dbmi/sunyaev/lab/nconnally/bin/htslib-1.23.1/bgzip")
+config.setdefault("htslib_lib",      "/n/data2/hms/dbmi/sunyaev/lab/nconnally/bin/htslib-1.23.1")
+config.setdefault("plink2_binary",   "/home/njc12/bin/plink2")
+config.setdefault("fastenloc_binary","/home/njc12/bin/fastenloc/src/fastenloc")
+config.setdefault("fastenloc_libpath","/home/njc12/miniconda3/envs/fastenloc_env/lib")
+config.setdefault("dap2enloc_binary","/home/njc12/bin/fastenloc/utility/dap2enloc")
+# dap-g also needs libgsl.so.28 from the same env we set up for fastenloc.
+config.setdefault("dapg_libpath",   "/home/njc12/miniconda3/envs/fastenloc_env/lib")
+
+
+# ---------- create legacy-filename + stage-2 symlinks before DAG build ----------
+#
+# This runs at parse time (not onstart) so symlinks exist before any input
+# function walks the search dirs. Idempotent.
+
+from helpers import alias as _alias_mod
+from pathlib import Path as _Path
+
+# 1) legacy-filename symlinks inside each search dir
+_seen_dirs = set()
+for _key in ("stage1_search_dirs", "cattle_baseline_search_dirs",
+             "stage2_search_dirs"):
+    for _d in config.get(_key, []) or []:
+        _d = os.path.expanduser(str(_d))
+        if _d in _seen_dirs or not os.path.isdir(_d):
+            continue
+        _seen_dirs.add(_d)
+        for _src, _link in _alias_mod.plan_aliases(_d):
+            if _link.exists() or _link.is_symlink():
+                continue
+            try:
+                _link.symlink_to(_src.name)
+            except OSError as e:
+                print(f"[alias] could not symlink {_link} -> {_src.name}: {e}")
+
+# 2) stage-2 search-dir adoption: if a search dir contains the expected
+#    gwas_{S1}_gtex_{S2}_maf_{M}/ subdir AND every required stage-2 output
+#    file is present (counting both the top-level and ``plink_analysis/``),
+#    symlink each into the canonical stage-2 location and touch the marker.
+#    All-or-nothing: a partial adoption would let stage 2 re-run and try to
+#    overwrite read-only symlinks.
+
+def _required_stage2_files(cfg):
+    return [os.path.basename(f) for f in [
+        paths.stage2_marker(cfg),
+        *[paths.stage2_pheno(cfg, c)            for c in paths.stage2_categories(cfg)],
+        *[paths.stage2_geno(cfg, c)             for c in paths.stage2_categories(cfg)],
+        *[paths.stage2_pca(cfg, c)              for c in paths.stage2_categories(cfg)],
+        *[paths.stage2_vcf(cfg, c)              for c in paths.stage2_categories(cfg)],
+        *[paths.stage2_pheno_for_plink(cfg, c)  for c in paths.stage2_categories(cfg)],
+    ] if os.path.basename(f) != ".stage2.done"]
+
+
+_stage2_target = _Path(paths.stage2_inner(config))
+_stage2_adopted = _stage2_target.exists() and (_stage2_target / ".stage2.done").exists()
+if not _stage2_adopted:
+    for _d in config.get("stage2_search_dirs", []) or []:
+        _src_dir = _Path(os.path.expanduser(str(_d))) / os.path.basename(paths.stage2_inner(config))
+        if not _src_dir.is_dir():
+            continue
+        # Index every file we can see in src_dir + src_dir/plink_analysis/
+        _idx = {}
+        for _root in [_src_dir, _src_dir / "plink_analysis"]:
+            if _root.is_dir():
+                for _f in _root.iterdir():
+                    if _f.is_file() or _f.is_symlink():
+                        _idx.setdefault(_f.name, _f)
+        _missing = [f for f in _required_stage2_files(config) if f not in _idx]
+        if _missing:
+            print(f"[stage2] {_src_dir} is missing {len(_missing)} required files "
+                  f"(e.g. {_missing[0]}); skipping adoption.")
+            continue
+        try:
+            _stage2_target.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"[stage2] cannot create {_stage2_target}: {e}")
+            break
+        _linked = 0
+        for _name, _src in _idx.items():
+            _link = _stage2_target / _name
+            if _link.exists() or _link.is_symlink():
+                continue
+            try:
+                _link.symlink_to(_src.resolve())
+                _linked += 1
+            except OSError as e:
+                print(f"[stage2] could not symlink {_link}: {e}")
+        try:
+            _Path(paths.stage2_marker(config)).touch()
+        except OSError:
+            pass
+        print(f"[stage2] adopted {_linked} files from {_src_dir}")
+        _stage2_adopted = True
+        break
+
+
+# 3) Per-stage output adoption from previous workdirs (stages 3-5; stage 2 is
+#    handled by the more permissive all-or-nothing block above). For each entry
+#    in `previous_workdirs`, walk that dir's stage{3,4,5}/<run_tag>/ subtree
+#    and symlink any matching file into <workdir>/stage{N}/<run_tag>/.
+#
+#    Use case: a controller died, /n/scratch got purged, the user moved
+#    outputs to /n/data2, or they want to pool partial progress from a
+#    sibling workdir. Symlinks let stage 3's per-trait rules and stage 4's
+#    fastenloc/stage 5's plink rules see existing outputs and skip
+#    regeneration.
+#
+#    Caveat: this does PER-FILE adoption. If a rule produces several outputs
+#    together (stage 4 fastenloc, stage 5 plink GLM) and only some are
+#    present in the previous workdir, Snakemake will rerun that rule and
+#    *all* its outputs will be re-produced. Stage 3 dap-g is per-trait so
+#    partial adoption helps proportionally.
+#
+#    NOTE: stage 1 outputs aren't adopted here -- they're already handled
+#    by the `find_in_search_dirs` lookups in the stage-1 rules.
+
+_run_tag = paths.stage2_run_tag(config)
+_workdir = _Path(paths.workdir(config))
+
+
+def _adopt_prior_outputs():
+    n_total = 0
+    for _prev in config.get("previous_workdirs", []) or []:
+        _prev = _Path(os.path.expanduser(str(_prev)))
+        if not _prev.is_dir():
+            print(f"[adopt] previous_workdir {_prev} does not exist; skipping")
+            continue
+        for _stage in ("stage3", "stage4", "stage5"):
+            _src = _prev / _stage / _run_tag
+            if not _src.is_dir():
+                continue
+            _tgt = _workdir / _stage / _run_tag
+            _n = 0
+            for _src_f in _src.rglob("*"):
+                if not (_src_f.is_file() or _src_f.is_symlink()):
+                    continue
+                _rel = _src_f.relative_to(_src)
+                _link = _tgt / _rel
+                if _link.exists() or _link.is_symlink():
+                    continue
+                try:
+                    _link.parent.mkdir(parents=True, exist_ok=True)
+                    _link.symlink_to(_src_f.resolve())
+                    _n += 1
+                except OSError as e:
+                    print(f"[adopt {_stage}] could not symlink {_link}: {e}")
+            if _n > 0:
+                print(f"[adopt {_stage}] symlinked {_n} file(s) from {_src}")
+            n_total += _n
+    return n_total
+
+
+_adopt_prior_outputs()
+
+
+# ---------- pipeline dispatch ----------
+
+if config["pipeline"] == "human":
+    include: "rules/stage1_human.smk"
+elif config["pipeline"] == "cattle_baseline":
+    include: "rules/stage1_cattle_baseline.smk"
+elif config["pipeline"] == "cattle_baseline_from_midpoint":
+    include: "rules/stage1_cattle_baseline_from_midpoint.smk"
+elif config["pipeline"] == "cattle_sel":
+    include: "rules/stage1_cattle_sel.smk"
+
+include: "rules/common.smk"
+
+
+# ---------- top-level target ----------
+
+CATS = paths.stage2_categories(config)
+
+
+def _all_stage4_outputs(cfg):
+    """One fastEnloc output set per GTEx variant (multi-size power-analysis run)."""
+    return [out
+            for g in paths.stage2_gtex_categories(cfg)
+            for out in paths.stage4_outputs(cfg, g)]
+
+
+rule all:
+    input:
+        # Stage 4 (fastEnloc) end products -- one set per GTEx variant
+        _all_stage4_outputs(config),
+        # Stage 5 (plink GLM) per-category sentinels
+        [paths.stage5_done(config, c) for c in CATS],
+
+
+# Convenience targets so users can stop early:
+rule stage1:
+    input:
+        os.path.join(paths.stage1_dir(config), paths.stage1_full_filename(config)),
+
+rule stage2:
+    input: paths.stage2_marker(config),
+
+rule stage3:
+    input: [paths.stage3_done(config, c) for c in CATS],
+
+rule stage4:
+    input: _all_stage4_outputs(config),
+
+rule stage5:
+    input: [paths.stage5_done(config, c) for c in CATS],

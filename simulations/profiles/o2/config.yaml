@@ -1,0 +1,31 @@
+# Snakemake SLURM profile for O2.
+#
+# Usage:
+#   snakemake --configfile config/cattle_sel_bottlenecked.yaml \
+#             --profile profiles/o2 -j 200
+#
+# Per-rule resources are declared inside the rule files (slurm_partition,
+# runtime, mem_mb, cpus_per_task). This profile only sets the executor and
+# the dispatch-time defaults.
+
+executor: slurm
+jobs: 200
+latency-wait: 60
+restart-times: 1
+
+default-resources:
+  - slurm_partition=short
+  - runtime=240
+  - mem_mb=8000
+  - cpus_per_task=2
+
+# Reasonable defaults for cluster behavior on O2:
+keep-going: True
+rerun-incomplete: True
+# use-conda intentionally disabled: every binary the rules need (python, slim,
+# dap-g, plink2, fastenloc, tabix, bgzip, dap2enloc) is referenced by absolute
+# path in the rules/Snakefile, so per-rule conda env creation is wasted work
+# (and consumed 2+ GB resolving deps, OOM-killing the controller previously).
+# The rules' `conda:` directives are kept as informational metadata.
+use-conda: False
+printshellcmds: True

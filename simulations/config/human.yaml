@@ -1,0 +1,51 @@
+# Human simulation (single Python step that calls SLiM via stdpopsim).
+
+pipeline: human
+species: human
+basename: human
+species_prefix: h
+
+# ---- Demography parameters ----
+# Q is the SLiM scaling factor, passed to human_simulation_o2.py via --Q.
+# Q=10 gives ~9k EUR individuals (suffices for 8k GWAS + 1k GTEx, i.e. A/B
+# in the README table). Override to Q=1 for the 150k-individual C/D runs.
+Q_scaling: 10
+L: 1000000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+# gwas_size + (largest GTEx size for the run) determines n_samples passed
+# to the SLiM driver. gtex_size = -1 fans out stage 2 into 1k/500/250
+# subsamples; n_samples is then gwas_size + 1000.
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: 500
+neutral_trait_vars: False
+
+# ---- Per-stage seeds ----
+stage1_seed: 19930224
+stage2_seed: 19930224
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+stage1_search_dirs:
+  - /n/scratch/users/n/njc12/sims/tmp
+  - /Users/noah/tmp/selsims/largesim
+  - /Users/noah/tmp/selsims
+  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/human
+stage2_search_dirs:
+  - /Users/noah/tmp/selsims/largesim/outputs
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto    # "auto" = intersection of gwas+gtex annotation VCF SNP IDs; or set an int
+already_includes_neutral: True
+
+# ---- Workdir / publish ----
+workdir: /n/scratch/users/n/njc12/snakemake/human
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/human

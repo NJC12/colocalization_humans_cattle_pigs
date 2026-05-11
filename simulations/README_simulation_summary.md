@@ -1,6 +1,34 @@
 # List of simulations
 
+| Population | GWAS size | GTEx size       | Selection on trait associated variants | Bottlenecking  | ID |
+| ---------- | --------- | --------------- | -------------------------------------- | -------------  | -- |
+| Human      |     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | A  |
+| Human      |     8,000 | 1,000, 500, 250 | Neutral                                | NA             | D  |
+| Human      |   300,000 |          50,000 | Directional (negative)                 | NA             | G  |
+| Human      |   300,000 |          50,000 | Neutral                                | NA             | H  |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative)                 | yes            | I  |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | yes            | L  |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | no             | O  |
 
+| Population | GWAS size | GTEx size | Selection on trait associated variants | Bottlenecking | Done | ID |
+| ---------- | --------- | --------- | -------------------------------------- | ------------- | ---- | -- |
+| Human      |     8,000 |     1,000 | Directional (negative)                 | NA            | 1/1  | A  |
+| Human      |     8,000 |       250 | Directional (negative)                 | NA            | 0/1  | B  |
+| Human      |     8,000 |       500 | Directional (negative)                 | NA            | 0/1  | C  |
+| Human      |     8,000 |     1,000 | Neutral                                | NA            | 0/1  | D  |
+| Human      |     8,000 |       500 | Neutral                                | NA            | 0/1  | E  |
+| Human      |     8,000 |       250 | Neutral                                | NA            | 0/1  | F  |
+| Human      |   300,000 |    50,000 | Directional (negative)                 | NA            | 0/1  | G  |
+| Human      |   300,000 |    50,000 | Neutral                                | NA            | 0/1  | H  |
+| Cattle     |     8,000 |     1,000 | Directional (negative)                 | yes           | 1/1  | I  |
+| Cattle     |     8,000 |       500 | Directional (negative)                 | yes           | 0/1  | J  |
+| Cattle     |     8,000 |       250 | Directional (negative)                 | yes           | 0/1  | K  |
+| Cattle     |     8,000 |     1,000 | Directional (positive)                 | yes           | 1/4  | L  |
+| Cattle     |     8,000 |       500 | Directional (positive)                 | yes           | 0/4  | M  |
+| Cattle     |     8,000 |       250 | Directional (positive)                 | yes           | 0/4  | N  |
+| Cattle     |     8,000 |     1,000 | Directional (positive)                 | no            | 0/1  | O  |
+| Cattle     |     8,000 |       500 | Directional (positive)                 | no            | 0/4  | P  |
+| Cattle     |     8,000 |       250 | Directional (positive)                 | no            | 0/1  | Q  |
 
 # Baseline cattle population
 
@@ -48,10 +76,10 @@ Use the data from "Baseline cattle population."
 
 Create the original population.
 
-`/home/njc12/miniconda3/envs/coloc_sims/bin/python /home/njc12/slim_simulations/scripts/human_simulation_o2_larger.py --seed 19930224 --gwas_h2 0.01 --gtex_h2 0.4 --length 1000000`
+`/home/njc12/miniconda3/envs/coloc_sims/bin/python /home/njc12/slim_simulations/scripts/human_simulation_o2.py --seed 19930224 --gwas_h2 0.01 --gtex_h2 0.4 --length 1000000 --Q 1 --n_samples 150000`
 
 Create the GWAS and GTEx data.
-`python /Users/noah/colocalization_humans_cattle_pigs/simulations/create_gwas_files_and_phenotypes.py --gtex_size 50000 --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --human_ts_file '/Users/noah/tmp/selsims/largesim/hts_19930224_large.ts' --out_dir '/Users/noah/tmp/selsims/largesim/outputs/' --already_includes_neutral True`
+`python /Users/noah/colocalization_humans_cattle_pigs/simulations/create_gwas_files_and_phenotypes.py --gtex_size 50000 --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --human_ts_file '/Users/noah/tmp/selsims/largesim/hts_19930224.ts' --out_dir '/Users/noah/tmp/selsims/largesim/outputs/' --already_includes_neutral True`
 
 # Cattle simulations including positive selection
 
@@ -59,7 +87,7 @@ Create the GWAS and GTEx data.
 
 This simulation uses the data from "Baseline cattle population" through epoch 8, at which point it changes the selection.
 
-`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=1 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
+`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=1 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24\" ../slim_simulations/scripts/farm_selection_from_ep8.slim`
 
 Simulate the traits using the specific mutations whose selection coefficients were changes.
 
@@ -69,7 +97,7 @@ Simulate the traits using the specific mutations whose selection coefficients we
 
 This simulation uses the data from "Baseline cattle population" through epoch 8, at which point it changes the selection.
 
-`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=0 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24\" ../slim_simulations/scripts/revision_pos_sel_farm_selection.slim`
+`/home/njc12/bin/slim/build/slim -m -t -l -s 24 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=0 -d num_muts_selected=26 -d Q_scaling=0.01 -d genome_length=10000000 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24\" ../slim_simulations/scripts/farm_selection_from_ep8.slim`
 
 Simulate the traits using the specific mutations whose selection coefficients were changes.
 

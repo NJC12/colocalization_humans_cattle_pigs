@@ -1,0 +1,50 @@
+# Cattle baseline simulation continued from an epoch-8 checkpoint of a
+# previously-completed cattle_baseline run. Runs epochs 8-12 only via
+# farm_selection_from_ep8.slim -- baseline-equivalent output, much faster.
+
+pipeline: cattle_baseline_from_midpoint
+species: cattle
+basename: cattle_baseline_from_midpoint
+species_prefix: c
+
+# ---- Demography parameters ----
+Q_scaling: 0.01
+L: 10000000
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: 1000
+
+# ---- Per-stage seeds ----
+# cattle_baseline_seed identifies the predecessor run whose epoch_8.ts we load
+cattle_baseline_seed: 20250303
+# stage1_seed is THIS continuation run's seed (must differ from baseline runs)
+stage1_seed: 20260511
+stage2_seed: 20260511
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Used to find the epoch_8 checkpoint produced by farm_selection.slim
+cattle_baseline_search_dirs:
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
+# Used to adopt a previously-produced from-midpoint .full.ts if seeds match
+stage1_search_dirs:
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp
+  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (distinct from cattle_baseline to avoid collisions) ----
+workdir: /n/scratch/users/n/njc12/snakemake/cattle_baseline_from_midpoint
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/cattle_baseline_from_midpoint

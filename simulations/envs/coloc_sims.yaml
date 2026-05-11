@@ -1,0 +1,24 @@
+name: coloc_sims
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - tskit
+  - pyslim
+  - msprime
+  - tstrait
+  - stdpopsim
+  - hail
+  - pandas
+  - numpy
+  - matplotlib
+  - seaborn
+  - bcftools
+  - htslib
+  - tabix
+  - plink2
+  - snakemake-minimal>=8
+  - snakemake-executor-plugin-slurm

@@ -1,0 +1,401 @@
+// Cattle simulation continued from an epoch-8 checkpoint of a previously
+// completed `farm_selection.slim` run, running epochs 8-12.
+//
+// Two modes, switched by `num_muts_selected`:
+//   * num_muts_selected == 0:  baseline continuation (no artificial positive
+//                              selection). Writes only `<out>.full.ts`.
+//   * num_muts_selected != 0:  retypes N (or fractional) mutations to m4 with
+//                              a scaled selection coefficient at sample_tick.
+//                              Writes `<out>.full.ts`, `<out>.m4_marks.tsv`,
+//                              and an `<out>.ep7.ts` checkpoint at startE8.
+//
+// Required -d flags (both modes):
+//   Q_scaling, genome_length, num_muts_selected, file_in, dir_out, file_out
+//
+// Required -d flags (selection mode only, i.e. num_muts_selected != 0):
+//   selected_generations, selection_multiplier
+//
+// Optional -d flag:
+//   continue_bottlenecking  (default 1; epochs 9-12 will set subpop sizes
+//                            from ep_sizes when 1, leave them when 0)
+
+
+function (float)mutTypeFrequency(o<MutationType>$ mutType) {
+    muts = sim.mutationsOfType(mutType);
+    if (muts.size() > 0)
+    return sim.mutationFrequencies(NULL, muts);
+    return NULL;
+}
+function (float)estimateNe_Heterozygosity(o<Subpopulation>$ subpop) {
+    pi = calcHeterozygosity(p0.genomes);
+    return pi / (4 * MU);
+}
+function (integer)tabulateFecundity(o<Subpopulation>$ subpop, i$ previous_N) {
+    parentIDs = subpop.individuals.pedigreeParentIDs;
+    rescaledParentIDs = parentIDs - min(parentIDs);
+    return tabulate(rescaledParentIDs, previous_N - 1);
+}
+function (float)estimateNe_Inbreeding(o<Subpopulation>$ subpop) {
+    previous_N = subpop.getValue("previous_N");
+    k = tabulateFecundity(subpop, previous_N);
+    return (previous_N * mean(k) - 2) / (mean(k) - 1 + var(k) / mean(k));
+}
+
+// Append a snapshot of every mutation ever seen (segregating + fixed + lost)
+// to af_history_path. Rows are tab-separated. Metadata for currently-
+// segregating mutations is refreshed each snapshot so m4 retyping at
+// sample_tick is reflected in subsequent rows.
+function (void)writeAFSnapshot(void) {
+    tick = sim.cycle;
+    cur = sim.mutations;
+    cur_ids = cur.id;
+    cur_freqs = sim.mutationFrequencies(NULL, cur);
+    subs = sim.substitutions;
+    sub_ids = subs.id;
+
+    ever_ids = ever_seen_ids;
+    ever_meta = ever_seen_meta;
+
+    // Refresh metadata for currently-segregating mutations. Handles both
+    // first-time-seen ids and re-typed ids (e.g. m1 -> m4 at sample_tick).
+    if (length(cur_ids) > 0) {
+        cur_match = match(cur_ids, ever_ids);
+        cur_meta = asString(cur.position) + "\t" +
+                   "m" + asString(cur.mutationType.id) + "\t" +
+                   asString(cur.selectionCoeff) + "\t" +
+                   asString(cur.originTick);
+        new_mask = (cur_match == -1);
+        if (any(new_mask)) {
+            ever_ids = c(ever_ids, cur_ids[new_mask]);
+            ever_meta = c(ever_meta, cur_meta[new_mask]);
+        }
+        if (any(!new_mask)) {
+            ever_meta[cur_match[!new_mask]] = cur_meta[!new_mask];
+        }
+    }
+
+    // Substitutions are immutable once fixed; register newly-seen ones.
+    if (length(sub_ids) > 0) {
+        sub_match = match(sub_ids, ever_ids);
+        new_mask = (sub_match == -1);
+        if (any(new_mask)) {
+            new_sub = subs[new_mask];
+            new_meta_sub = asString(new_sub.position) + "\t" +
+                           "m" + asString(new_sub.mutationType.id) + "\t" +
+                           asString(new_sub.selectionCoeff) + "\t" +
+                           asString(new_sub.originTick);
+            ever_ids = c(ever_ids, new_sub.id);
+            ever_meta = c(ever_meta, new_meta_sub);
+        }
+    }
+
+    defineGlobal("ever_seen_ids", ever_ids);
+    defineGlobal("ever_seen_meta", ever_meta);
+
+    n_ever = length(ever_ids);
+    if (n_ever == 0)
+        return;
+
+    // Default freq is 0 (lost); overwrite for substitutions and segregating.
+    freqs = rep(0.0, n_ever);
+    if (length(sub_ids) > 0) {
+        sub_in_ever = match(sub_ids, ever_ids);
+        freqs[sub_in_ever] = 1.0;
+    }
+    if (length(cur_ids) > 0) {
+        cur_in_ever = match(cur_ids, ever_ids);
+        freqs[cur_in_ever] = cur_freqs;
+    }
+
+    lines = asString(tick) + "\t" + asString(ever_ids) + "\t" +
+            ever_meta + "\t" + asString(freqs);
+
+    if (af_history_header_written) {
+        writeFile(af_history_path, lines, append=T);
+    } else {
+        header = "tick\tmutation_id\tposition\tmutation_type\tselection_coeff\torigin_tick\tfrequency";
+        writeFile(af_history_path, c(header, lines));
+        defineGlobal("af_history_header_written", T);
+    }
+}
+
+
+initialize() {
+    initializeSLiMOptions(keepPedigrees=T, preventIncidentalSelfing=T);
+    // initializeTreeSeq(simplificationRatio=50);
+    initializeTreeSeq();
+    defineConstant("Q", Q_scaling);
+    defineConstant("L", genome_length);
+    defineConstant("burn_in", 0);
+    defineConstant("pop_names", c("Holstein_Friesian"));
+    defineConstant("input_file", file_in);
+    defineConstant("output_dir", dir_out);
+    defineConstant("output_file", file_out);
+
+    // pos_muts == 0 -> baseline mode (no positive selection retyping).
+    // pos_muts != 0 -> selection mode (requires selected_generations and
+    //                  selection_multiplier).
+    defineConstant("pos_muts", num_muts_selected);
+    if (pos_muts != 0) {
+        defineConstant("gen_sel", selected_generations);
+        defineConstant("selco_mult", selection_multiplier);
+    } else {
+        defineConstant("gen_sel", 0);
+        defineConstant("selco_mult", 0);
+    }
+    // continue_bottlenecking is optional; default to 1 so the baseline
+    // continuation matches the prior farm_selection_from_ep8.slim behavior
+    // of bottlenecking through epochs 9-12.
+    if (exists("continue_bottlenecking"))
+        defineConstant("bottleneck", continue_bottlenecking);
+    else
+        defineConstant("bottleneck", 1);
+
+    if (Q != 1) {
+        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
+    }
+    defineConstant("recombination_rates", _recombination_rates);
+    defineConstant("recombination_ends", L-1);
+    initializeRecombinationRate(recombination_rates, recombination_ends);
+    defineConstant("metadata", Dictionary("Q", Q));
+    defineConstant("pos_neg", c(-1, 1));
+
+    // Starting with the original 17000, even though we don't use it
+    defineConstant("ep_sizes", c(0, 17000, 10000, 7000, 3500, 2500, 2000, 1500, 1000, 350, 250, 120, 90));
+    defineConstant("ep_lengths", c(0, 29800, 1000, 600, 1100, 200, 300, 130, 6, 6, 6, 3, 3));
+
+    // Neutral mutations will be added later
+    // Two categories of deleterious mutations: m1 & m2
+    // One category of positive mutations: m3
+    // m1: non-coding deleterious mutations
+    // m2: coding deleterious mutations
+    // The ratio is 5:1 because we care only about the
+    // non-neutral fraction of the genome, which is enriched for coding
+    // We will also add a small number of positively selected mutations
+    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m3", 0.5, "e", Q * 0.005);
+    initializeMutationType("m4", 0.5, "f", 1e-10); // selection-mode target; proportion 0 means m4 is never freshly drawn
+    initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(0.83, 0.16, 0.01, 0));
+    initializeGenomicElement(g1, 0, L-1);
+    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
+    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
+    defineConstant("MU", Q*c(2.36e-8 / 40));
+
+    defineGlobal("startE2", -1);
+    defineGlobal("startE3", -1);
+    defineGlobal("startE4", -1);
+    defineGlobal("startE5", -1);
+    defineGlobal("startE6", -1);
+    defineGlobal("startE7", -1);
+    defineGlobal("startE8", -1);
+    defineGlobal("startE9", -1);
+    defineGlobal("startE10", -1);
+    defineGlobal("startE11", -1);
+    defineGlobal("startE12", -1);
+    defineGlobal("end_tick", -1);
+    defineGlobal("sample_tick", -1);
+}
+
+
+// Epoch 1
+1 late() {
+    sim.readFromPopulationFile(file_in);
+    print("File read in");
+    for (subpop in sim.subpopulations) {
+        print("| subpop " + subpop.id + ": " + subpop.individualCount + " individuals");
+    }
+    p0.setValue("previous_N", p0.individualCount);
+    print("| Ne (heterozygosity): " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+
+    // Allele-frequency history sidecar: a snapshot is appended every 100
+    // ticks (and once more at end_tick) covering every mutation ever seen,
+    // with freq 0.0 (lost) or 1.0 (fixed/substitution) once a mutation
+    // leaves the segregating pool.
+    defineGlobal("af_history_path", output_dir + output_file + ".af_history.tsv");
+    defineGlobal("af_history_header_written", F);
+    defineGlobal("ever_seen_ids", integer(0));
+    defineGlobal("ever_seen_meta", string(0));
+
+    // THIS IS CURRENTLY HARD CODED TO START AT EPOCH 8
+    defineGlobal("startE8", sim.cycle+1);
+    defineGlobal("startE9", asInteger(startE8 + ep_lengths[8]/Q));
+    defineGlobal("startE10", asInteger(startE9 + ep_lengths[9]/Q));
+    defineGlobal("startE11", asInteger(startE10 + ep_lengths[10]/Q));
+    defineGlobal("startE12", asInteger(startE11 + ep_lengths[11]/Q));
+    defineGlobal("end_tick", asInteger(startE12 + ep_lengths[12]/Q));
+    // In baseline mode (pos_muts==0), gen_sel==0 so sample_tick == end_tick.
+    // The late() block below gates on pos_muts != 0 anyway.
+    defineGlobal("sample_tick", asInteger(end_tick - gen_sel/Q));
+
+
+    print("| Current tick: " + sim.cycle);
+}
+
+25001: late() {
+    p0.setValue("previous_N", p0.individualCount);
+    if (pos_muts != 0 & sim.cycle == sample_tick) {
+        print("| Sampling at tick " + sim.cycle);
+
+        if (pos_muts >= 1) {
+            chosen = sample(sim.mutations, min(pos_muts, size(sim.mutations)));
+        } else if (pos_muts > 0) {
+            chosen = sample(sim.mutations, min(asInteger(size(sim.mutations) * pos_muts), size(sim.mutations)));
+        } else {
+            print("You messed up the --num_selected_mutations");
+        }
+        print("| m4 selection coefficients:");
+        for (mut in chosen) {
+	    s_orig = mut.selectionCoeff;
+            s = min(mut.selectionCoeff * selco_mult * sample(pos_neg, 1), 1.0);
+            mut.setMutationType(m4);
+            mut.setSelectionCoeff(s);
+            print("|     " + s_orig + " -> " + s);
+        }
+
+        lines = sapply(chosen,
+                    "applyValue.position + '\t' + applyValue.selectionCoeff;");
+        writeFile(output_dir + output_file + ".m4_marks.tsv",
+                c("position\tselection_coeff", lines));
+
+        print("| Marked " + size(chosen) + " mutations for m4 relabeling");
+
+    }
+}
+
+// early() {
+25001: early() { // Not sure what I'll have to change this to.
+// 434801: early() {
+
+    if (sim.cycle % 100 == 0) {
+        print("| Tick " + sim.cycle);
+        print("|     Ne (heterozygosity): " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+        print("|     m4 count:            " + sum(sim.mutations.mutationType == m4));
+        writeAFSnapshot();
+    }
+
+
+    // Epoch 8
+    if (sim.cycle == startE8) {
+        // sim.outputFull(output_dir + output_file + ".ep7.txt", binary=T);
+        sim.treeSeqSimplify();
+        if (pos_muts != 0)
+            sim.treeSeqOutput(output_dir + output_file + ".ep7.ts", metadata=metadata);
+        // sim.treeSeqSimplify();
+        print("-----Epoch 8 begins - tick " + sim.cycle + "-----");
+        // if (bottleneck == 1) {
+        if (1 == 1) { // When starting in epoch 8, always bottleneck 8
+            p0.setSubpopulationSize(asInteger(ep_sizes[8]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE9 = asInteger(sim.cycle + ep_lengths[8]/Q);
+        // defineGlobal("startE9", asInteger(sim.cycle + ep_lengths[8]/Q));
+        print("| Length will be: " + ep_lengths[8]);
+    }
+
+    if (sim.cycle == startE8 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding):        " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+    // Epoch 9
+    if (sim.cycle == startE9) {
+        print("-----Epoch 9 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[9]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        // startE10 = asInteger(sim.cycle + ep_lengths[9]/Q);
+        // defineGlobal("startE10", asInteger(sim.cycle + ep_lengths[9]/Q));
+        print("| Length will be: " + ep_lengths[9]);
+    }
+
+    if (sim.cycle == startE9 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        // print("| Ne (inbreeding): " + asInteger(estimateNe_Inbreeding(p0) * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // Epoch 10
+    if (sim.cycle == startE10) {
+        print("-----Epoch 10 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[10]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        print("| Length will be: " + ep_lengths[10]);
+    }
+
+    if (sim.cycle == startE10 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // Epoch 11
+    if (sim.cycle == startE11) {
+        print("-----Epoch 11 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[11]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        print("| Length will be: " + ep_lengths[11]);
+    }
+
+    if (sim.cycle == startE11 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+// Epoch 12
+    if (sim.cycle == startE12) {
+        print("Starting ep12");
+        print("-----Epoch 12 begins - tick " + sim.cycle + "-----");
+        if (bottleneck == 1) {
+            p0.setSubpopulationSize(asInteger(ep_sizes[12]/Q));
+            print("| Bottlenecking");
+        } else {
+            print("| Not bottlenecking");
+        }
+        print("| Length will be: " + ep_lengths[12]);
+    }
+
+    if (sim.cycle == startE12 + 1) {
+        print("| Census population size: " + asInteger(p0.individualCount * Q));
+        print("| Ne (heterozygosity):    " + asInteger(estimateNe_Heterozygosity(p0)*Q));
+    }
+
+
+    // End of simulation
+    if (sim.cycle == end_tick) {
+        // Capture the final state in af_history (end_tick is generally not
+        // a multiple of 100, so the % 100 hook above would miss it).
+        if (sim.cycle % 100 != 0)
+            writeAFSnapshot();
+        // sim.outputFull(output_dir + output_file + ".full.txt", binary=T);
+        sim.treeSeqSimplify();
+        print("-----Ending-----");
+        sim.treeSeqOutput(output_dir + output_file + ".full.ts", metadata=metadata);
+        sim.simulationFinished();
+    }
+}
+
+10000000 early() {
+    print("This is just a placeholder tick (slim won't run past the highest named tick). If you see this message, something is wrong.");
+}
+
+// Baseline (no positive selection) example:
+// /home/njc12/bin/slim/build/slim -m -t -l -s 20260511 -d Q_scaling=0.01 -d genome_length=10000000 -d num_muts_selected=0 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"farm_selection_from_ep8.Q_0.01.L_10000000.cb_20250303.seed_20260511\" farm_selection_from_ep8.slim
+// Selection (m4 retyping at sample_tick) example:
+// /home/njc12/bin/slim/build/slim -m -t -l -s 24 -d Q_scaling=0.01 -d genome_length=10000000 -d num_muts_selected=26 -d selection_multiplier=100 -d selected_generations=23 -d continue_bottlenecking=0 -d file_in=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection/farm_selection_Q_0.01.L_10000000.seed_20250303.epoch_8.ts\" -d dir_out=\"/n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp/\" -d file_out=\"revision_farm_selection_mult_100_gen_23_muts_26_not_bottlenecked_sd24\" farm_selection_from_ep8.slim
