@@ -12,6 +12,18 @@ import subprocess
 import math
 import gzip
 
+
+def str2bool(s):
+    # argparse's `type=bool` is broken: bool("False") is True. Use this instead.
+    if isinstance(s, bool):
+        return s
+    sl = str(s).strip().lower()
+    if sl in ('true', '1', 'yes', 'y', 't'):
+        return True
+    if sl in ('false', '0', 'no', 'n', 'f'):
+        return False
+    raise argparse.ArgumentTypeError(f'Boolean value expected, got {s!r}')
+
 def remove_fixed(ts):
     # Also removes triallelic sites
     bad_sites = []
@@ -24,6 +36,22 @@ def remove_fixed(ts):
                 daf = tree.num_samples(mut.node) / ts.num_samples
                 if daf == 0 or daf == 1:
                     bad_sites.append(site.id)
+    return ts.delete_sites(bad_sites)
+
+def remove_position_zero(ts):
+    """Drop any site at integer position 0.
+
+    tskit's `write_vcf` refuses to emit a variant at VCF position 0 (the
+    VCF spec is 1-indexed); with `discrete_genome=True`, msprime can place a
+    mutation at integer position 0 (seed-dependent). Causative trait variants
+    are restricted to [0.5 Mb, 9.5 Mb] downstream, so a position-0 variant
+    can never become a trait variant -- filtering it out upstream is harmless
+    and keeps every downstream `write_vcf` valid. See notebook entry
+    `b3-stage2-position-zero` (B3 / seed 23).
+    """
+    bad_sites = [s.id for s in ts.sites() if int(s.position) == 0]
+    if bad_sites:
+        print(f'Dropping {len(bad_sites)} site(s) at position 0')
     return ts.delete_sites(bad_sites)
 
 def relabel_ag_variants(ts, marks_file):
@@ -59,7 +87,7 @@ def relabel_ag_variants(ts, marks_file):
 
 def add_neutral(sts, Q=1, seed=0):
     print(f'The tree sequence began with {sts.num_mutations} mutations')
-    mut_rate = 2.36e-8 / Q
+    mut_rate = 8.4e-9 / Q
     # From https://tskit.dev/pyslim/docs/latest/tutorial.html#sec-tutorial-adding-neutral-mutations
     next_id = pyslim.next_slim_mutation_id(sts)
     ts = msprime.sim_mutations(
@@ -75,7 +103,29 @@ def add_neutral(sts, Q=1, seed=0):
     
     return ts
 
-def get_vars_df(ts, Q=1):
+def get_vars_df(ts, Q_scaling=1.0, times_already_unscaled=False):
+    """Tabulate the variants, undoing SLiM's Q rescaling.
+
+    `Q_scaling` is the stage-1 rescaling factor (the config key of the same
+    name; cattle 0.01, human 10). BOTH engines write s_slim = Q_scaling *
+    s_real into the SLiM script -- raw SLiM via `initializeMutationType(...,
+    Q * -4e-4)` in farm_*.slim, stdpopsim via slim_engine.py's
+    `"Q * " + <mean>` (dfe.py:Q_scaled_index marks the mean of "e"/"g"
+    distributions) -- so the recorded selection_coeff is divided by Q_scaling
+    here to recover the real coefficient. This feeds
+    generate_phenos_from_pos(), which takes beta = sqrt(|selco|) * scaling, so
+    an uncorrected selco rescales every effect size by sqrt(Q_scaling) and the
+    per-variant variance explained by Q_scaling.
+
+    `times_already_unscaled` is True for stdpopsim output: its
+    _recap_and_rescale does `table.time *= slim_scaling_factor` on the node,
+    migration and mutation tables, so times come back in real generations --
+    but it never touches selection_coeff. Raw SLiM output (cattle) gets
+    neither correction, so its times still need multiplying by Q_scaling.
+    Conflating the two is what left the human arm's selco at 10x: the cattle
+    call correctly passed the reciprocal of Q_scaling, the human call passed
+    nothing.
+    """
     tree = pd.DataFrame({
         'id': [v.site.id for v in ts.variants()],
         'type': [v.site.mutations[0].metadata['mutation_list'][0]['mutation_type'] for v in ts.variants()],
@@ -85,9 +135,9 @@ def get_vars_df(ts, Q=1):
         'position': [v.site.position for v in ts.variants()]
     })
 
-    if Q != 1:
-        tree['selco'] = tree['selco']*Q
-        tree['time'] = tree['time']/Q
+    tree['selco'] = tree['selco'] / Q_scaling
+    if not times_already_unscaled:
+        tree['time'] = tree['time'] * Q_scaling
 
     tree['maf'] = tree['daf'].apply(lambda x: min([x, 1-x]))
     tree['Vs'] = np.abs(tree['selco']) * tree['daf'] * (1-tree['daf'])
@@ -98,10 +148,14 @@ def build_redistribution_map(donor_positions, recipient_positions, seed):
     # Pair each non-zero-selco donor position with a distinct neutral-selco
     # recipient. Sampling is seeded by `seed` for determinism. If fewer
     # recipients exist than donors, donors are randomly truncated so the
-    # pairing is one-to-one. Returns (donors_kept, {donor: recipient}).
+    # pairing is one-to-one. Donor keys are int (truncated) to support the
+    # caller's `redistribution.get(int(pos))` lookup; recipient values are
+    # kept as their original float position so the downstream pandas lookup
+    # `vars[vars['position'] == recipient_position]` matches the float dtype
+    # of `vars['position']`.
     rng = np.random.default_rng(seed)
     donors = sorted(int(p) for p in donor_positions)
-    recipients = sorted(int(p) for p in recipient_positions)
+    recipients = np.array(sorted(float(p) for p in recipient_positions), dtype=float)
     n_keep = min(len(donors), len(recipients))
     if n_keep < len(donors):
         kept_idx = rng.choice(len(donors), size=n_keep, replace=False)
@@ -109,7 +163,32 @@ def build_redistribution_map(donor_positions, recipient_positions, seed):
     else:
         donors_kept = donors
     chosen_recipients = rng.choice(recipients, size=n_keep, replace=False)
-    return donors_kept, dict(zip(donors_kept, chosen_recipients.tolist()))
+    return donors_kept, dict(zip(donors_kept, [float(x) for x in chosen_recipients]))
+
+def subsample_traits(df, n, seed):
+    """Randomly keep `n` rows of `df` without replacement, seeded for
+    determinism. Returns `df` unchanged if `n` is None or the pool already holds
+    <= n rows (the "use all available" shortfall behavior). Kept rows stay in
+    their original (position) order so downstream trait ordering is stable."""
+    if n is None or df.shape[0] <= int(n):
+        return df
+    rng = np.random.default_rng(seed)
+    keep = sorted(rng.choice(df.shape[0], size=int(n), replace=False).tolist())
+    return df.iloc[keep]
+
+def select_flank_gtex(gtex_vars, min_maf, flank_lo, flank_hi, n, seed):
+    """GTEx-only trait loci drawn from the two edge buffers: positions
+    <= flank_lo (region start .. 500 kb in) or >= flank_hi (500 kb before the
+    region end .. end). Same causal eligibility as the central loci
+    (selco != 0, MAF >= min_maf) but measured in the GTEx sample, since these
+    traits are only phenotyped there. Randomly keeps `n` (seeded); uses all if
+    fewer exist. These give GTEx loci >=500 kb from every central GWAS locus,
+    for a non-colocalization comparison."""
+    flank = gtex_vars.loc[
+        (gtex_vars['maf'] >= min_maf) & (gtex_vars['selco'] != 0)
+        & ((gtex_vars['position'] <= flank_lo) | (gtex_vars['position'] >= flank_hi))
+    ]
+    return subsample_traits(flank, n, seed)
 
 def attach_beta(vars_df, key_df):
     # Add a 'beta' column to vars_df from the per-trait key DataFrame.
@@ -122,11 +201,15 @@ def attach_beta(vars_df, key_df):
     out['beta'] = out['beta'].fillna(0.0)
     return out
 
-def generate_phenos_from_pos(position, ts, vars, scaling=1, recipient_position=None):
+def generate_phenos_from_pos(position, ts, vars, scaling=1, recipient_position=None, flip_seed=False):
     # Donor (`position`) determines the magnitude of beta via its selco;
     # recipient determines which site the effect lands on, the trait id,
-    # and the seed used for `tstrait`'s random sign draw (so GWAS and GTEx
-    # pick the same sign).
+    # and the seed used for `tstrait`'s random sign draw.
+    # When flip_seed=True (used for GTEx), the seed is offset by 1e8 so the
+    # sign draw is independent of the GWAS draw at the same recipient.
+    # numpy's default_rng rejects negative ints, so a literal sign flip
+    # (-1*recipient_position) would crash; offsetting into a disjoint range
+    # achieves the same "independent draw" effect with a valid seed.
     if recipient_position is None:
         recipient_position = position
     site_id = vars[vars['position'] == recipient_position]['id']
@@ -137,7 +220,8 @@ def generate_phenos_from_pos(position, ts, vars, scaling=1, recipient_position=N
     beta = np.sqrt(np.abs(selco)) * scaling
     recipient_position = int(recipient_position)
 
-    pheno = tstrait.sim_phenotype(ts, model=tstrait.TraitModelFixed(beta, random_sign=True), causal_sites=[site_id], h2=1, random_seed=recipient_position)
+    sign_seed = recipient_position + 10**8 if flip_seed else recipient_position
+    pheno = tstrait.sim_phenotype(ts, model=tstrait.TraitModelFixed(beta, random_sign=True), causal_sites=[site_id], h2=1, random_seed=sign_seed)
     pheno.phenotype['environmental_noise'] = np.random.normal(0, 1, pheno.phenotype.shape[0])
     pheno.phenotype['trait_id'] = 'tr' + str(int(recipient_position))
     pheno.trait['trait_id'] = 'tr' + str(int(recipient_position))
@@ -145,14 +229,14 @@ def generate_phenos_from_pos(position, ts, vars, scaling=1, recipient_position=N
 
     return pheno
 
-def combine_phenos_to_df(positions, ts, vars, scaling, redistribution=None):
+def combine_phenos_to_df(positions, ts, vars, scaling, redistribution=None, flip_seed=False):
     id_list = ['tsk_' + str(x.id) for x in ts.individuals()]
     phenos = pd.DataFrame({'FID': 0, 'IID': id_list})
     snp_key = pd.DataFrame({'position': [], 'site_id': [], 'effect_size': [], 'causal_allele': [], 'allele_freq': [], 'trait_id': []})
 
     for pos in positions['position']:
         recipient = redistribution.get(int(pos)) if redistribution else None
-        tr = generate_phenos_from_pos(pos, ts, vars, scaling, recipient_position=recipient)
+        tr = generate_phenos_from_pos(pos, ts, vars, scaling, recipient_position=recipient, flip_seed=flip_seed)
         tr_id = tr.trait.trait_id.iloc[0]
         tr_vals = tr.phenotype.phenotype
         # phenos[tr_id] = tr_vals
@@ -290,16 +374,20 @@ def get_arguments():
     parser.add_argument('--gwas_scaling', type=int)
     parser.add_argument('--gtex_scaling', type=int)
     parser.add_argument('--r2_value', type=float) # Note to self: I think I no longer use this. Confirm, then delete.
+    parser.add_argument('--Q_scaling', type=float, required=True, help='The stage-1 SLiM rescaling factor (config key Q_scaling; cattle 0.01, human 10). Selection coefficients recorded in the tree sequence are Q_scaling * the real value and are divided back by get_vars_df, which sets beta = sqrt(|selco|) * scaling. Applies to whichever single species this invocation runs.')
     parser.add_argument('--min_maf', type=float, help='The minor allele frequency variants must reach to be tested')
+    parser.add_argument('--length', type=float, required=False, default=1e7, help='Genomic region length L (bp). Trait-associated variants are restricted to [5e5, L-5e5] (a 500 kb buffer from each edge). Default 1e7 reproduces the legacy hardcoded [5e5, 9.5e6] window.')
     parser.add_argument('--human_ts_file', type=str)
     parser.add_argument('--cattle_ts_file', type=str)
     parser.add_argument('--cattle_m4_file', type=str, help='A file keeping track of the cattle variants under intense agricultural selection')
     parser.add_argument('--out_dir', type=str)
     parser.add_argument('--n_samples', type=float, required=False, default=None, help='The number of individuals in the GTEx sample and GWAS sample combined (default is the full number of simulated individuals)')
     parser.add_argument('--gtex_size', type=float, required=False, default=500, help='The number of individuals in the GTEx sample (default 500; -1 creates outputs of 1k, 500, and 250)')
-    parser.add_argument('--already_includes_neutral', type=bool, required=False, default=False, help='Only needed if you already added neutral mutations in the input data')
+    parser.add_argument('--already_includes_neutral', type=str2bool, required=False, default=False, help='Only needed if you already added neutral mutations in the input data')
     parser.add_argument('--seed', type=int, default=19930224)
-    parser.add_argument('--neutral_trait_vars', type=bool, required=False, default=False, help='Redistribute each non-zero effect size from its causal (selco != 0) donor variant to a random eligible neutral (selco == 0) recipient. Trait IDs are named for the recipient position. The redistribution is identical across GWAS and GTEx samples and is seeded by --seed.')
+    parser.add_argument('--neutral_trait_vars', type=str2bool, required=False, default=False, help='Redistribute each non-zero effect size from its causal (selco != 0) donor variant to a random eligible neutral (selco == 0) recipient. Trait IDs are named for the recipient position. The redistribution is identical across GWAS and GTEx samples and is seeded by --seed.')
+    parser.add_argument('--n_central_traits', type=int, required=False, default=None, help='Number of central trait loci to keep -- these are the GWAS traits AND the shared GTEx traits (same positions). Drawn from the eligible causal pool (selco != 0, MAF >= min_maf, central [5e5, L-5e5] window). Randomly subsampled (seeded by --seed) when the pool is larger; all are used when fewer exist. Default None = use all eligible (legacy behavior).')
+    parser.add_argument('--n_flank_gtex_traits', type=int, required=False, default=50, help='Number of GTEx-ONLY trait loci drawn from the two 500 kb edge flanks ([0,5e5] U [L-5e5,L]) with the same causal eligibility (selco != 0, MAF >= min_maf in the GTEx sample). Added to the GTEx trait set on top of the shared central loci, so each GWAS locus can be compared to GTEx loci >=500 kb away. Randomly subsampled (seeded); uses all if fewer exist. Default 50; set 0 to disable.')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -311,6 +399,15 @@ if __name__ == '__main__':
     min_maf = args.min_maf
     gtex_size = args.gtex_size
 
+    # Trait-associated (causal) variants are restricted to the central region,
+    # excluding a 500 kb buffer from each edge. Computed from L so a smaller
+    # region gets the correct central window (L=2 Mb -> [5e5, 1.5e6], a 1 Mb
+    # center). At the default L=1e7 this is [5e5, 9.5e6] -- identical to the
+    # previous hardcoded bounds, so 10 Mb runs are unaffected.
+    region_length = args.length
+    trait_pos_lo = 5e5
+    trait_pos_hi = region_length - 5e5
+
     if gtex_size < 0:
         multiple_gtex_outputs = True
         gtex_size = 1000
@@ -320,6 +417,19 @@ if __name__ == '__main__':
     run_hums = not args.human_ts_file is None
     run_cows = not args.cattle_ts_file is None
 
+    # A single --Q_scaling cannot serve two species with different stage-1
+    # rescaling factors (cattle 0.01, human 10). The Snakemake stage-2 rule
+    # always passes exactly one ts file (rules/common.smk: params.ts_flag), so
+    # this only fires for a hand-written dual-species invocation; fail loudly
+    # rather than silently mis-scaling one arm's effect sizes.
+    if run_hums and run_cows:
+        raise SystemExit(
+            'Refusing to run both species in one invocation: --Q_scaling '
+            f'({args.Q_scaling}) applies to a single species. Run cattle and '
+            'human separately, each with its own --Q_scaling.'
+        )
+    q_scaling = args.Q_scaling
+
     # Clean up the data
     print('Loading data')
     if run_cows:
@@ -328,19 +438,41 @@ if __name__ == '__main__':
         if args.cattle_m4_file is not None:
             cows = relabel_ag_variants(cows, args.cattle_m4_file)
         print('Cattle demography')
-        cows = remove_fixed(add_neutral(cows, Q=100, seed=args.seed))
+        # add_neutral's Q is the RECIPROCAL of the config's Q_scaling: it
+        # divides the overlay rate (mut_rate = 8.4e-9 / Q), and raw SLiM
+        # branch lengths are inflated by 1/Q_scaling, so the rate must shrink
+        # by the same factor. 1/0.01 == 100.0 exactly, so this is bit-identical
+        # to the literal 100 it replaces.
+        cows = remove_fixed(add_neutral(cows, Q=1 / q_scaling, seed=args.seed))
         cows = pyslim.convert_alleles(pyslim.generate_nucleotides(cows))
+        cows = remove_position_zero(cows)
     if run_hums:
         # hums = tskit.load('/Users/noah/comparative_colocalization/data/simulations/demographic_simulations/human/human_selection_Q_1.L10000000.seed_20250521.full.ts')
         hums = tskit.load(args.human_ts_file)
         print('Human demography')
         if not args.already_includes_neutral:
+            # Deliberately left at the default Q=1, i.e. the unscaled 8.4e-9.
+            # stdpopsim's _recap_and_rescale has already put times back into
+            # real generations, so unlike the cattle branch there is nothing to
+            # compensate for here. (Dead path today -- every config sets
+            # already_includes_neutral: True -- and note that stage 1's own
+            # overlay in human_simulation_o2.py uses 8.4e-9 * Q, which looks
+            # like the same conflation this commit fixes for selco.)
             hums = remove_fixed(add_neutral(hums, seed=args.seed))
-            hums = pyslim.convert_alleles(pyslim.generate_nucleotides(hums))
+        # tskit's write_vcf emits REF="" / ALT="<int>" for SLiM-origin mutations
+        # (SLiMMutationModel uses integer alleles, no ancestral_state string).
+        # plink2 --make-pgen then writes a malformed pvar and crashes. Apply the
+        # nucleotide overlay unconditionally — mirrors what the cattle branch
+        # does above, and adds nothing when already_includes_neutral=True.
+        hums = pyslim.convert_alleles(pyslim.generate_nucleotides(hums))
+        hums = remove_position_zero(hums)
 
     # Split into GWAS and GTEx
     print('Splitting into GWAS and GTEx')
-    n_samples = args.n_samples
+    # --n_samples is parsed as float; it feeds range()/stride math below (and
+    # when unset defaults to an int num_individuals), so coerce to int here or
+    # `range(0, 2*n_samples, ...)` raises TypeError on a float.
+    n_samples = args.n_samples if args.n_samples is None else int(args.n_samples)
     hgtex_subsamples = {}
     cgtex_subsamples = {}
     if run_hums:
@@ -384,33 +516,46 @@ if __name__ == '__main__':
 
     # Get the variants
     print('Getting variants')
+    # Cattle .ts files come straight from SLiM (sim.treeSeqOutput), so neither
+    # the selection coefficients nor the times have been un-rescaled. Human
+    # .ts files come from stdpopsim, which un-rescales times but not selection
+    # coefficients -- hence times_already_unscaled=True on that side only.
     if run_cows:
-        cvars = get_vars_df(cows, Q=100)
-        cgwas_vars = get_vars_df(cgwas, Q=100)
-        cgtex_vars = get_vars_df(cgtex, Q=100)
+        print(f'Undoing Q_scaling={q_scaling} on cattle selection coefficients '
+              f'(selco / {q_scaling}) and times (time * {q_scaling})')
+        cvars = get_vars_df(cows, Q_scaling=q_scaling)
+        cgwas_vars = get_vars_df(cgwas, Q_scaling=q_scaling)
+        cgtex_vars = get_vars_df(cgtex, Q_scaling=q_scaling)
         print('Number of cattle vars: ' + str(len(cvars)))
+        print('Median |selco| at selected sites: '
+              f"{np.abs(cvars.loc[cvars['selco'] != 0, 'selco']).median():.4e}")
         for name, data in cgtex_subsamples.items():
-            data['vars'] = get_vars_df(data['ts'], Q=100)
+            data['vars'] = get_vars_df(data['ts'], Q_scaling=q_scaling)
             print(f'Number of {name} vars: ' + str(len(data['vars'])))
     if run_hums:
-        hvars = get_vars_df(hums)
-        hgwas_vars = get_vars_df(hgwas)
-        hgtex_vars = get_vars_df(hgtex)
+        print(f'Undoing Q_scaling={q_scaling} on human selection coefficients '
+              f'(selco / {q_scaling}); stdpopsim already un-rescaled the times')
+        hvars = get_vars_df(hums, Q_scaling=q_scaling, times_already_unscaled=True)
+        hgwas_vars = get_vars_df(hgwas, Q_scaling=q_scaling, times_already_unscaled=True)
+        hgtex_vars = get_vars_df(hgtex, Q_scaling=q_scaling, times_already_unscaled=True)
         print('Number of human vars: ' + str(len(hvars)))
+        print('Median |selco| at selected sites: '
+              f"{np.abs(hvars.loc[hvars['selco'] != 0, 'selco']).median():.4e}")
         for name, data in hgtex_subsamples.items():
-            data['vars'] = get_vars_df(data['ts'])
+            data['vars'] = get_vars_df(data['ts'], Q_scaling=q_scaling,
+                                       times_already_unscaled=True)
             print(f'Number of {name} vars: ' + str(len(data['vars'])))
 
     # Select the relevant alleles
     print('Selecting relevant alleles')
     if run_hums:
         hgtex_maf_dict = {var.position: var.maf for _, var in hgtex_vars.iterrows()}
-        hcausative_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] != 0) & (hgwas_vars['position'] > 5e5) & (hgwas_vars['position'] < 9.5e6) & (hgwas_vars.position.isin(hgtex_vars.position))]
+        hcausative_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] != 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
         print(f'Number of causative human variants: {hcausative_maf01.shape[0]}')
         hcausative_maf01 = hcausative_maf01[hcausative_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= min_maf, axis=1)]
     if run_cows:
         cgtex_maf_dict = {var.position: var.maf for _, var in cgtex_vars.iterrows()}
-        ccausative_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] != 0) & (cgwas_vars['position'] > 5e5) & (cgwas_vars['position'] < 9.5e6) & (cgwas_vars.position.isin(cgtex_vars.position))]
+        ccausative_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] != 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
         print(f'Number of causative cattle variants: {ccausative_maf01.shape[0]}')
         ccausative_maf01 = ccausative_maf01[ccausative_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
 
@@ -422,30 +567,54 @@ if __name__ == '__main__':
     hredist = credist = None
     if args.neutral_trait_vars:
         if run_hums:
-            hneutral_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] == 0) & (hgwas_vars['position'] > 5e5) & (hgwas_vars['position'] < 9.5e6) & (hgwas_vars.position.isin(hgtex_vars.position))]
+            hneutral_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] == 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
             hneutral_maf01 = hneutral_maf01[hneutral_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= min_maf, axis=1)]
             hkept, hredist = build_redistribution_map(hcausative_maf01['position'], hneutral_maf01['position'], seed=args.seed)
             print(f'Human donors: {len(hcausative_maf01)}, neutral recipients: {len(hneutral_maf01)}, paired: {len(hkept)}')
             hcausative_maf01 = hcausative_maf01[hcausative_maf01['position'].astype(int).isin(hkept)]
         if run_cows:
-            cneutral_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] == 0) & (cgwas_vars['position'] > 5e5) & (cgwas_vars['position'] < 9.5e6) & (cgwas_vars.position.isin(cgtex_vars.position))]
+            cneutral_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] == 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
             cneutral_maf01 = cneutral_maf01[cneutral_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
             ckept, credist = build_redistribution_map(ccausative_maf01['position'], cneutral_maf01['position'], seed=args.seed)
             print(f'Cattle donors: {len(ccausative_maf01)}, neutral recipients: {len(cneutral_maf01)}, paired: {len(ckept)}')
             ccausative_maf01 = ccausative_maf01[ccausative_maf01['position'].astype(int).isin(ckept)]
 
+    # Down-select trait loci.
+    #  - GWAS traits = central causal loci, subsampled to --n_central_traits
+    #    (used for BOTH the GWAS sample and the shared GTEx loci, so the shared
+    #    set is identical between the two).
+    #  - GTEx traits = those shared central loci PLUS --n_flank_gtex_traits
+    #    GTEx-only loci from the 500 kb edge flanks.
+    # Distinct seed offsets keep the central and flank draws (and the two
+    # species) independent but deterministic given --seed (= stage2_seed).
+    print('Selecting trait loci')
+    if run_hums:
+        hcausative_maf01 = subsample_traits(hcausative_maf01, args.n_central_traits, args.seed)
+        hflank_gtex = select_flank_gtex(hgtex_vars, min_maf, trait_pos_lo, trait_pos_hi,
+                                        args.n_flank_gtex_traits, args.seed + 10**7)
+        hgtex_trait_pos = pd.concat([hcausative_maf01, hflank_gtex])
+        print(f'Human trait loci -- GWAS/central: {hcausative_maf01.shape[0]}, '
+              f'GTEx flank: {hflank_gtex.shape[0]}, GTEx total: {hgtex_trait_pos.shape[0]}')
+    if run_cows:
+        ccausative_maf01 = subsample_traits(ccausative_maf01, args.n_central_traits, args.seed + 2*10**7)
+        cflank_gtex = select_flank_gtex(cgtex_vars, min_maf, trait_pos_lo, trait_pos_hi,
+                                        args.n_flank_gtex_traits, args.seed + 3*10**7)
+        cgtex_trait_pos = pd.concat([ccausative_maf01, cflank_gtex])
+        print(f'Cattle trait loci -- GWAS/central: {ccausative_maf01.shape[0]}, '
+              f'GTEx flank: {cflank_gtex.shape[0]}, GTEx total: {cgtex_trait_pos.shape[0]}')
+
     # Creating phenotypes
     print('Creating phenotypes')
     if run_cows:
         cgwas_key_maf01, cgwas_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgwas, cgwas_vars, scaling=gwas_scaling, redistribution=credist)
-        cgtex_key_maf01, cgtex_traits_maf01 = combine_phenos_to_df(ccausative_maf01, cgtex, cgtex_vars, scaling=gtex_scaling, redistribution=credist)
+        cgtex_key_maf01, cgtex_traits_maf01 = combine_phenos_to_df(cgtex_trait_pos, cgtex, cgtex_vars, scaling=gtex_scaling, redistribution=credist, flip_seed=True)
         for name, data in cgtex_subsamples.items():
             sub_traits = cgtex_traits_maf01.iloc[data['retained_inds']].copy().reset_index(drop=True)
             sub_traits['IID'] = ['tsk_' + str(i) for i in range(len(sub_traits))]
             data['traits'] = sub_traits
     if run_hums:
         hgwas_key_maf01, hgwas_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgwas, hgwas_vars, scaling=gwas_scaling, redistribution=hredist)
-        hgtex_key_maf01, hgtex_traits_maf01 = combine_phenos_to_df(hcausative_maf01, hgtex, hgtex_vars, scaling=gtex_scaling, redistribution=hredist)
+        hgtex_key_maf01, hgtex_traits_maf01 = combine_phenos_to_df(hgtex_trait_pos, hgtex, hgtex_vars, scaling=gtex_scaling, redistribution=hredist, flip_seed=True)
         # For subsamples, take the simulated trait rows of the retained individuals.
         # Same simulated outcomes, just observed in fewer individuals (power-analysis setup).
         # Renumber IIDs so they match the re-indexed individuals in each subsampled VCF (tsk_0..tsk_N-1).

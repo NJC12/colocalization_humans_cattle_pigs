@@ -56,10 +56,35 @@ rule stage2_split_pheno:
         ),
         gwas_scaling       = config["gwas_scaling"],
         gtex_scaling       = config["gtex_scaling"],
+        # Stage-1 SLiM rescaling factor. Both engines record selection
+        # coefficients as Q_scaling * the real value; get_vars_df divides them
+        # back, and beta = sqrt(|selco|) * scaling depends on it. No
+        # config.setdefault() for this one on purpose -- a silent default of 1
+        # would reintroduce the un-corrected effect sizes, so a config missing
+        # the key must fail loudly.
+        Q_scaling          = config["Q_scaling"],
         min_maf            = config["min_maf"],
+        L                  = config["L"],
         gtex_size          = config["gtex_size"],
         already_neutral    = config.get("already_includes_neutral", True),
         neutral_trait_vars = config.get("neutral_trait_vars", False),
+        # Number of central trait loci (GWAS + shared GTEx). Omit the flag when
+        # unset so the script falls back to "use all eligible" (legacy).
+        central_flag       = (
+            f"--n_central_traits {config['n_central_traits']}"
+            if config.get("n_central_traits") is not None else ""
+        ),
+        # GTEx-only flank loci; 50 for all runs unless a config overrides it.
+        n_flank_gtex       = config.get("n_flank_gtex_traits", 50),
+        # Cap the total sampled pool (GWAS + GTEx) at n_samples individuals.
+        # Omitted when unset so the script defaults to the full simulated
+        # population (legacy). Used to cap the no-bottleneck cattle category (G),
+        # whose ~100k population would otherwise give a ~99k-individual GWAS
+        # instead of the intended 8k (bottlenecked E/F have ~9k pop -> 8k GWAS).
+        n_samples_flag     = (
+            f"--n_samples {config['n_samples']}"
+            if config.get("n_samples") is not None else ""
+        ),
         out_dir            = paths.stage2_dir(config),
         marker             = paths.stage2_marker(config),
         seed               = config["stage2_seed"],
@@ -67,12 +92,13 @@ rule stage2_split_pheno:
         script             = os.path.join(SIM_REPO_DIR, "create_gwas_files_and_phenotypes.py"),
     log: os.path.join(paths.workdir(config), "logs", "stage2_split_pheno.log")
     resources:
-        # On O2, jobs <12h must go to `short` (or `priority`); `medium` is
-        # reserved for jobs longer than 12h. Set 8h here -- the trait sim on a
-        # 10 Mb cattle TS finishes in well under that.
-        slurm_partition = "short",
-        runtime = 8 * 60,
-        mem_mb  = 64000,
+        # Human runs at L=10 Mb write ~10x larger SBAMS/VCFs (~1.2M variants
+        # vs ~125k at L=1 Mb); 8h on short was tight and 64 GB borderline.
+        # Use priority + 24h + 128 GB to give headroom for the human pipeline;
+        # cattle (10 Mb, ~30k variants) easily fits but uses the same config.
+        slurm_partition = "priority",
+        runtime = 24 * 60,
+        mem_mb  = 128000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
@@ -84,13 +110,18 @@ rule stage2_split_pheno:
             {params.m4_flag} \
             --gwas_scaling {params.gwas_scaling} \
             --gtex_scaling {params.gtex_scaling} \
+            --Q_scaling {params.Q_scaling} \
             --min_maf {params.min_maf} \
+            --length {params.L} \
             --r2_value 0.2 \
             --gtex_size {params.gtex_size} \
             --seed {params.seed} \
             --out_dir "{params.out_dir}" \
             --already_includes_neutral {params.already_neutral} \
             --neutral_trait_vars {params.neutral_trait_vars} \
+            {params.central_flag} \
+            --n_flank_gtex_traits {params.n_flank_gtex} \
+            {params.n_samples_flag} \
             > {log} 2>&1
         touch "{params.marker}"
         """
@@ -141,11 +172,63 @@ checkpoint stage3_manifest:
     input:
         marker = ancient(paths.stage2_marker(config)),
         pheno  = lambda wc: ancient(paths.stage2_pheno(config, wc.cat)),
-    shell:
-        r"""
-        mkdir -p "$(dirname {output.manifest})"
-        awk '{{print $2}}' "{input.pheno}" > "{output.manifest}"
-        """
+    run:
+        # Default: emit all trait IDs (column 2 of the pheno sbams file).
+        # If `selection_cap` is set, each replicate independently picks a
+        # ceil(selection_cap / num_replicates) prefix of a (selection_seed,
+        # stage1_seed)-seeded permutation -- see helpers/selection.py.
+        os.makedirs(os.path.dirname(output.manifest), exist_ok=True)
+        with open(input.pheno) as f:
+            all_traits = [ln.split()[1] for ln in f if ln.strip()]
+        cap = config.get("selection_cap")
+        if cap is not None:
+            from helpers.selection import select_traits_for_replicate
+            selected = select_traits_for_replicate(
+                all_traits,
+                cap=int(cap),
+                seed=int(config["selection_seed"]),
+                num_replicates=int(config["num_replicates"]),
+                stage1_seed=int(config["stage1_seed"]),
+            )
+        else:
+            selected = all_traits
+        with open(output.manifest, "w") as f:
+            for t in selected:
+                f.write(t + "\n")
+
+
+def _dapg_mem_mb_base(wc):
+    # Per-category base memory. `seff` on five completed hgwas DAP-G jobs
+    # (medium / 16 CPU / L=1Mb±1Mb window) showed MaxRSS 16-40 GB, so 32 GB
+    # is the safe baseline for hgwas at the new ±0.25 Mb / ~57 k SNPs window
+    # (roughly half the SNP count -> RSS ~8-25 GB). gtex categories use less.
+    # Human values serve as an upper bound for cattle; cattle's smaller
+    # post-MAF SNP counts (e.g. ~1.5 k at G's ±0.25 Mb window) need less.
+    cat = wc.cat
+    if config["species"] == "human":
+        if cat.endswith("gwas"):
+            return 32000
+        if cat == "hgtex":
+            return 16000
+        return 8000  # hgtex_smaller, hgtex_smallest
+    # cattle cgwas memory. F1 (cattle_sel_bottlenecked) seff showed ~947 MB
+    # peak, but G1-G4 (cattle_sel_not_bottlenecked, continue_bottlenecking=0)
+    # OOM-killed 100% of cgwas DAP-G jobs at 4 GB and 12 GB. F's bottleneck
+    # made it a category-incompatible baseline for G: higher Ne -> more
+    # common variants in the 8000-sample cgwas -> much larger sparse-LD
+    # matrix, with observed peak MaxRSS up to ~30 GB. 32 GB base matches
+    # the human hgwas tier (100% success rate empirically), scaling
+    # 32 -> 64 -> 96 GB on retries.
+    if cat.endswith("gwas"):
+        return 32000
+    return 8000
+
+
+def _dapg_mem_mb(wc, attempt):
+    # attempt-scaled: 1x base, 2x base, 3x base on retries (paired with
+    # --restart-times in profiles/o2/config.yaml). Lets the upper tail of
+    # heavy loci succeed without over-provisioning the median job.
+    return _dapg_mem_mb_base(wc) * attempt
 
 
 rule stage3_dapg_locus:
@@ -166,17 +249,16 @@ rule stage3_dapg_locus:
         dapg_libpath = config.get("dapg_libpath", ""),
         script       = os.path.join(SIM_REPO_DIR, "scripts", "dapg_one_locus.sh"),
     resources:
-        # Per-category sizing -- cgtex (~1k samples) is light; cgwas (~99k
-        # samples) needs 200 GB / 16 CPUs / 2-day runtime per the legacy
-        # submit_revision_dapg_o2.sh "large" profile (sample size >80k).
-        # Mixing them in one rule with one resource block OOM-killed every
-        # cgwas job at 32 GB (peak RSS during dap-g matrix work for a 99k x
-        # ~5k window blew past the limit). Using callables that branch on
-        # wildcards.cat: gwas-category → large; gtex-category → small.
-        slurm_partition = lambda wc: "medium" if wc.cat.endswith("gwas") else "short",
-        runtime         = lambda wc: 48 * 60  if wc.cat.endswith("gwas") else 4 * 60,
-        mem_mb          = lambda wc: 200000   if wc.cat.endswith("gwas") else 8000,
-        cpus_per_task   = lambda wc: 16       if wc.cat.endswith("gwas") else 4,
+        # DAP-G is single-threaded (`seff` CPU efficiency = 6.08-6.20% on
+        # 16-CPU jobs, i.e. ~1 of 16 cores used). cpus_per_task=4 gives
+        # mild headroom for transient bursts without burning fairshare on
+        # idle cores or blocking on 16-CPU slot availability. Memory is
+        # attempt-scaled (32 -> 64 -> 96 GB for hgwas) to handle the upper
+        # tail without over-provisioning the median.
+        slurm_partition = "short",
+        runtime         = lambda wc: 6 * 60   if wc.cat.endswith("gwas") else 4 * 60,
+        mem_mb          = _dapg_mem_mb,
+        cpus_per_task   = 4,
     shell:
         r"""
         bash "{params.script}" \
@@ -252,6 +334,7 @@ rule stage4_fastenloc:
         gwas_dir   = lambda wc: paths.stage3_dir(config, paths.stage2_gwas_category(config)),
         gtex_dir   = lambda wc: paths.stage3_dir(config, wc.gtex_cat),
         prefix     = lambda wc: paths.stage4_prefix(config, wc.gtex_cat),
+        outputs_subdir = paths.stage3_outputs_subdir_name(config),
         # "auto" means: count IDs that appear in both annotation VCFs (the
         # intersection of GWAS and GTEx tested SNPs). Override by setting
         # fastenloc_total_snps to an integer in the config YAML.
@@ -262,9 +345,11 @@ rule stage4_fastenloc:
         script     = os.path.join(SIM_REPO_DIR, "scripts", "run_fastenloc.sh"),
     log: os.path.join(paths.workdir(config), "logs", "stage4_fastenloc_{gtex_cat}.log")
     resources:
+        # At L=10 Mb the annotation-VCF intersection scales with SNP count
+        # (~1.2 M for human, ~30 k for cattle). 32 GB / 4 h is safe on short.
         slurm_partition = "short",
-        runtime = 2 * 60,
-        mem_mb  = 16000,
+        runtime = 4 * 60,
+        mem_mb  = 32000,
         cpus_per_task = 4,
     shell:
         r"""
@@ -273,6 +358,7 @@ rule stage4_fastenloc:
         bash "{params.script}" \
             --gwas-dir "{params.gwas_dir}" \
             --gtex-dir "{params.gtex_dir}" \
+            --outputs-subdir "{params.outputs_subdir}" \
             --annot-gwas "{input.annot_gwas}" \
             --annot-gtex "{input.annot_gtex}" \
             --out-prefix "{params.prefix}" \
@@ -302,9 +388,11 @@ rule stage5_plink_glm:
         script = os.path.join(SIM_REPO_DIR, "scripts", "run_plink_glm.sh"),
     log: os.path.join(paths.workdir(config), "logs", "stage5_plink_{cat}.log")
     resources:
+        # plink2 GLM at L=10 Mb / 1.2 M SNPs / 8k samples is still fast
+        # but margin was tight on 4 h. Bump to 32 GB / 8 h.
         slurm_partition = "short",
-        runtime = 4 * 60,
-        mem_mb  = 16000,
+        runtime = 8 * 60,
+        mem_mb  = 32000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
