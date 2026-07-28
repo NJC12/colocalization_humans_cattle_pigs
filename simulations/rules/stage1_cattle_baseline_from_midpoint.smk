@@ -24,7 +24,7 @@ def _stage1_baseline_from_midpoint_inputs(wc):
     if full_hit:
         return {"existing_full": full_hit, "epoch_8": []}
     epoch_8_hit = search_dirs.find_in_search_dirs(
-        paths.stage1_cattle_baseline_epoch_8(config),
+        paths.stage1_cattle_baseline_handoff(config),
         config.get("cattle_baseline_search_dirs", []),
         expected_seed=config["cattle_baseline_seed"],
     )
@@ -43,17 +43,19 @@ rule stage1_cattle_baseline_from_midpoint:
         seed        = config["stage1_seed"],
         Q           = config["Q_scaling"],
         L           = config["L"],
+        recomb      = config["recombination_rate"],
         slim        = config.get("slim_binary", "/home/njc12/bin/slim/build/slim"),
         slim_script = os.path.join(SIM_REPO_DIR, "farm_selection_from_ep8.slim"),
         out_dir     = paths.stage1_dir(config),
         out_base    = paths.stage1_cattle_baseline_from_midpoint_full(config).replace(".full.ts", ""),
     log: os.path.join(paths.workdir(config), "logs", "stage1_cattle_baseline_from_midpoint.log")
     resources:
-        # Epochs 8-12 on a 10 Mb genome, populations 1000 -> 90. Hours, not
-        # days. Match cattle_sel's resource profile.
+        # Epochs 8-12, populations 1000 -> 90 (census 1/Q times that). Measured
+        # on the round-3 E1 run at L=2 Mb: 4:29 elapsed, 600 MB RSS. The 8h/32 GB
+        # figures were sized for a 10 Mb genome; raise them again if L grows.
         slurm_partition = "short",
-        runtime = 8 * 60,
-        mem_mb  = 32000,
+        runtime = 60,
+        mem_mb  = 4000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
@@ -65,14 +67,15 @@ rule stage1_cattle_baseline_from_midpoint:
             exit 0
         fi
         if [ -z "{input.epoch_8}" ]; then
-            echo "stage1_cattle_baseline_from_midpoint: no epoch_8 checkpoint found in cattle_baseline_search_dirs" >&2
-            echo "Add the dir containing farm_selection_Q_*.L_*.seed_*.epoch_8.ts to cattle_baseline_search_dirs in your config." >&2
+            echo "stage1_cattle_baseline_from_midpoint: no end-of-epoch-7 handoff checkpoint found in cattle_baseline_search_dirs" >&2
+            echo "Add the dir containing farm_selection_Q_*.L_*.seed_*.ep7.ts to cattle_baseline_search_dirs in your config." >&2
             exit 1
         fi
         {params.slim} -m -t -l \
             -s {params.seed} \
             -d Q_scaling={params.Q} \
             -d genome_length={params.L} \
+            -d recomb_rate={params.recomb} \
             -d num_muts_selected=0 \
             -d file_in='"{input.epoch_8}"' \
             -d dir_out='"{params.out_dir}/"' \

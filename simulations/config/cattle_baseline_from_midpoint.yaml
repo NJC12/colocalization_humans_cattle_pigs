@@ -9,6 +9,11 @@ species_prefix: c
 
 # ---- Demography parameters ----
 Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+recombination_rate: 9.26e-9
 L: 10000000
 
 # ---- Sample sizes ----
@@ -28,23 +33,37 @@ stage3_seed: 1
 stage4_seed: 1
 stage5_seed: 1
 
+# ---- Trait selection cap (optional) ----
+# Set all three to enable a category-wide cap on fine-mapped traits.
+# Each replicate independently selects ceil(selection_cap / num_replicates)
+# traits, seeded by (selection_seed, stage1_seed). Raising selection_cap on
+# a later run extends the prefix without reshuffling, so already-completed
+# DAP-G/fastEnloc jobs remain valid.
+# selection_cap: 1500
+# selection_seed: 42
+# num_replicates: 4
+
 # ---- Search dirs ----
-# Used to find the epoch_8 checkpoint produced by farm_selection.slim
+# Round-2 (new DFE) starts from scratch; legacy dirs intentionally omitted to
+# avoid silently reusing old-DFE .ts files. Populate with round-2 paths once a
+# baseline run exists under simulations_round_2/ if you want to chain from a
+# from-midpoint epoch_8 checkpoint.
 cattle_baseline_search_dirs:
-  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
-  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
-# Used to adopt a previously-produced from-midpoint .full.ts if seeds match
-stage1_search_dirs:
-  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
-  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/tmp
-  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_2/cattle_baseline/stage1
+stage1_search_dirs: []
 stage2_search_dirs: []
+
+# ---- SLiM binary ----
+# Same as cattle_baseline.yaml: use the SLiM 5.2 wrapper so file_version 0.9
+# .trees files (written by pyslim 1.1.1) can be read.
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
 
 # ---- Stage 3/4 specifics ----
 ld_ctrl: 0.75
+dapg_window: 250000
 fastenloc_total_snps: auto
 already_includes_neutral: True
 
 # ---- Workdir / publish (distinct from cattle_baseline to avoid collisions) ----
-workdir: /n/scratch/users/n/njc12/snakemake/cattle_baseline_from_midpoint
-publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/cattle_baseline_from_midpoint
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2/cattle_baseline_from_midpoint
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2/cattle_baseline_from_midpoint

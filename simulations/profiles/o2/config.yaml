@@ -11,12 +11,17 @@
 executor: slurm
 jobs: 200
 latency-wait: 60
-restart-times: 1
+restart-times: 2
 
+# Defaults apply to rules with no `resources:` block of their own -- currently
+# stage4_annot_vcf and stage3_done. Measured over 18 round-3 stage4_annot_vcf
+# jobs: max 0:41 elapsed, 110 MB RSS. The old runtime=240/mem_mb=8000 were ~350x
+# and ~73x the observed peaks; a smaller ask is far more backfill-eligible,
+# which matters because these jobs spent longer queued than running.
 default-resources:
   - slurm_partition=short
-  - runtime=240
-  - mem_mb=8000
+  - runtime=30
+  - mem_mb=4000
   - cpus_per_task=2
 
 # Reasonable defaults for cluster behavior on O2:

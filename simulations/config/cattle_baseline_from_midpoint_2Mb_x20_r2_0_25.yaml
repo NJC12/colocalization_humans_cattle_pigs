@@ -1,0 +1,90 @@
+# === r2 = 0.25 DAP-G FINE-MAPPING VARIANT ===
+# Auto-generated from cattle_baseline_from_midpoint_2Mb_x20.yaml. IDENTICAL to it EXCEPT ld_ctrl (the DAP-G
+# -ld_control r2 threshold) is 0.25 instead of 0.75, and outputs go to a
+# separate ..._r2_0_25 workdir root so the r2=0.75 and r2=0.25 result sets
+# coexist and never overwrite each other. r2 only affects stages 3-4 (DAP-G
+# + fastEnloc); stage 1 is reused (stage1_search_dirs, passed per-replicate
+# on the CLI) and stages 2/5 are recomputed deterministically in the new root.
+#
+# Cattle baseline replicate (category E), 2 Mb region -- x20 PHENOTYPE-SCALING
+# VARIANT of category E.
+#
+# Identical to cattle_baseline_from_midpoint_2Mb.yaml EXCEPT the phenotype
+# scaling multipliers are 20 instead of 35 (gwas_scaling / gtex_scaling below).
+# The trait effect size is  beta = sqrt(|selection_coeff|) * scaling
+# (create_gwas_files_and_phenotypes.py), so this rescales every phenotype by
+# 20/35 relative to the x35 run while leaving the genetics untouched.
+#
+# Stage 1 (the genetic simulation) is NOT rerun: each replicate reuses the
+# existing x35 .full.ts via stage1_search_dirs, passed PER REPLICATE on the
+# command line by submit_2Mb_x20_E.sh (it points at that replicate's own
+# E{N}/stage1 dir only -- the lookup is seed-strict on stage1_seed). When the
+# .full.ts is found, the stage-1 rule short-circuits to a symlink and never runs
+# farm_selection_from_ep8.slim, so cattle_baseline_search_dirs / the epoch_8
+# checkpoint below are not consulted. Only stages 2-5 rerun.
+#
+# Per-replicate config: submit 10x, overriding stage1_seed, stage2_seed,
+# stage1_search_dirs, workdir, publishdir on the command line (E{N} -> seed
+# 5{N}: E1=51 ... E10=60). Outputs land under a separate ..._2Mb_x20 root so the
+# x35 and x20 results sit side by side and never collide.
+
+pipeline: cattle_baseline_from_midpoint
+species: cattle
+basename: cattle_baseline_from_midpoint
+species_prefix: c
+
+# ---- Demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+recombination_rate: 9.26e-9
+L: 2000000
+
+# ---- Sample sizes ----
+gwas_scaling: 20       # x20 variant (x35 run uses 35)
+gtex_scaling: 20       # x20 variant (x35 run uses 35)
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds ----
+# cattle_baseline_seed identifies the shared 2 Mb baseline whose epoch_8.ts the
+# x35 run loaded; it is embedded in the reused .full.ts filename so it must match
+# the x35 value. stage1_seed is THIS replicate's continuation seed (overridden
+# per replicate on the command line).
+cattle_baseline_seed: 20250303
+stage1_seed: 51
+stage2_seed: 51
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the x35
+# E{N}/stage1 dir so stage 1 is reused, not rerun). cattle_baseline_search_dirs
+# is kept for parity but is NOT consulted when the .full.ts is reused.
+cattle_baseline_search_dirs:
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_baseline/stage1
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.25          # r2=0.25 variant (r2=0.75 runs use 0.75)
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb_x20_r2_0_25/cattle_baseline_from_midpoint
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2_2Mb_x20_r2_0_25/cattle_baseline_from_midpoint

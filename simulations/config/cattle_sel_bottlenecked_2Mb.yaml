@@ -1,0 +1,67 @@
+# Category F: cattle + positive selection on 26 trait variants, WITH continued
+# bottlenecking through the late epochs. 2 Mb region. Continues from the shared
+# 2 Mb epoch_8 checkpoint (same one E consumes) via farm_selection_from_ep8.slim
+# with num_muts_selected>0. Per-replicate config: submit 10x, overriding
+# stage1_seed/stage2_seed/workdir/publishdir on the command line (F{N} -> 6{N}:
+# F1=61 ... F10=70).
+
+pipeline: cattle_sel
+species: cattle
+basename: cattle_sel_bot
+species_prefix: c
+
+# ---- Selection / demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+recombination_rate: 9.26e-9
+L: 2000000
+selection_multiplier: 100
+selected_generations: 23
+num_muts_selected: 26
+continue_bottlenecking: 1
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+cattle_baseline_seed: 20250303   # identifies the 2 Mb epoch_8.ts to load
+stage1_seed: 61
+stage2_seed: 61
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Point at the shared 2 Mb baseline's stage1 dir (where its epoch_8.ts lives).
+# stage1_search_dirs stays empty so every cattle+selection run re-runs the
+# from-ep8 SLiM job fresh (never short-circuits to a pre-existing full.ts).
+cattle_baseline_search_dirs:
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_baseline/stage1
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_sel_bot
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2_2Mb/cattle_sel_bot

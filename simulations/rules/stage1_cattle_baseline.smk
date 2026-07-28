@@ -31,10 +31,12 @@ rule stage1_cattle_create_pop:
         seed       = config["stage1_seed"],
         Q          = config["Q_scaling"],
         L          = config["L"],
+        recomb     = config["recombination_rate"],
         script_dir = SIM_REPO_DIR,
+        python     = config["python_binary"],
     log: os.path.join(paths.workdir(config), "logs", "stage1_cattle_create_pop.log")
     resources:
-        slurm_partition = "short",
+        slurm_partition = "priority,long",
         runtime = 4 * 60,
         mem_mb  = 50000,
         cpus_per_task = 4,
@@ -48,11 +50,12 @@ rule stage1_cattle_create_pop:
             exit 0
         fi
         cd "{params.script_dir}"
-        python farm_create_orig_pop_e2.py \
+        "{params.python}" farm_create_orig_pop_e2.py \
             --seed {params.seed} --Q {params.Q} --length {params.L} \
+            --recomb_rate {params.recomb} \
+            --out_dir "$(dirname {output.ts})" \
+            --out_name "$(basename {output.ts})" \
             > {log} 2>&1
-        SRC=/home/njc12/slim_simulations/farm_slim_outputs/$(basename {output.ts})
-        cp -u "$SRC" "{output.ts}"
         """
 
 
@@ -78,13 +81,26 @@ rule stage1_cattle_burn_in:
         seed        = config["stage1_seed"],
         Q           = config["Q_scaling"],
         L           = config["L"],
+        recomb      = config["recombination_rate"],
         slim        = config.get("slim_binary", "/home/njc12/bin/slim/build/slim"),
-        slim_script = os.path.join(SIM_REPO_DIR, "farm_burn_in_e2.slim"),
+        # farm_burn_in_continue.slim, not farm_burn_in_e2.slim. The latter
+        # terminates at a hard-coded tick 25000 and checkpoints every 10/Q ticks,
+        # neither of which survives contact with the Q=1 deep history: it would
+        # stop 5000 ticks short of burn_in_cycle=30000 (so the declared output
+        # never appears) and write 3000 checkpoint files on the way. The continue
+        # script takes both as arguments and reads an orig-pop at tick 1 just as
+        # happily as it resumes from a checkpoint.
+        slim_script = os.path.join(SIM_REPO_DIR, "farm_burn_in_continue.slim"),
+        end_tick    = config.get("burn_in_cycle", 25000),
+        # Checkpoints feed helpers/sfs_equilibrium.py; ~25-30 time points is
+        # plenty. Falls back to the old 10/Q cadence when unset.
+        ckpt_every  = config.get("burn_in_checkpoint_every",
+                                 max(1, int(10 / config["Q_scaling"]))),
         out_dir     = paths.stage1_dir(config),
         out_base    = paths.stage1_cattle_baseline_burnin(config).rsplit(".cycle_", 1)[0],
     log: os.path.join(paths.workdir(config), "logs", "stage1_cattle_burn_in.log")
     resources:
-        slurm_partition = "priority",
+        slurm_partition = "priority,long",
         runtime = 30 * 24 * 60,
         mem_mb  = 150000,
         cpus_per_task = 4,
@@ -101,6 +117,9 @@ rule stage1_cattle_burn_in:
             -s {params.seed} \
             -d Q_scaling={params.Q} \
             -d length={params.L} \
+            -d recomb_rate={params.recomb} \
+            -d end_tick={params.end_tick} \
+            -d checkpoint_every={params.ckpt_every} \
             -d file_in='"{input.upstream}"' \
             -d dir_out='"{params.out_dir}/"' \
             -d file_out='"{params.out_base}"' \
@@ -131,6 +150,7 @@ rule stage1_cattle_selection:
         seed        = config["stage1_seed"],
         Q           = config["Q_scaling"],
         L           = config["L"],
+        recomb      = config["recombination_rate"],
         tick        = config.get("burn_in_cycle", 25000),
         slim        = config.get("slim_binary", "/home/njc12/bin/slim/build/slim"),
         slim_script = os.path.join(SIM_REPO_DIR, "farm_selection.slim"),
@@ -138,7 +158,7 @@ rule stage1_cattle_selection:
         out_base    = paths.stage1_cattle_baseline_full(config).replace(".full.ts", ""),
     log: os.path.join(paths.workdir(config), "logs", "stage1_cattle_selection.log")
     resources:
-        slurm_partition = "priority",
+        slurm_partition = "priority,long",
         runtime = 30 * 24 * 60,
         mem_mb  = 150000,
         cpus_per_task = 4,
@@ -155,6 +175,7 @@ rule stage1_cattle_selection:
             -s {params.seed} \
             -d Q_scaling={params.Q} \
             -d length={params.L} \
+            -d recomb_rate={params.recomb} \
             -d tick={params.tick} \
             -d file_in='"{input.upstream}"' \
             -d dir_out='"{params.out_dir}/"' \

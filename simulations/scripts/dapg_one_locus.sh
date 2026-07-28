@@ -5,7 +5,6 @@
 # Required args (all --flag value):
 #   --pheno PATH       SBAMS phenotype file (one trait per line, field 2 = trait id)
 #   --geno PATH        bgzipped + tabix-indexed geno file (chrom-prepended SBAMS)
-#   --pca PATH         PCA covariate file
 #   --trait ID         trait id (e.g. tr1234567); position derived from the suffix
 #   --window N         flanking window in bp (default 1_000_000)
 #   --ld-ctrl FLOAT    dap-g -ld_control argument
@@ -17,6 +16,16 @@
 #   --threads N        threads for dap-g (also exported as OMP_NUM_THREADS, etc.)
 #   --out PATH         dap-g output file
 #   --log PATH         dap-g log file
+# Optional:
+#   --pca PATH         SBAMS "controlled" covariate rows to append. Left in place
+#                      for ad-hoc use but NOT passed by rules/common.smk any more.
+#                      Stage 2 used to supply 20 PCs from ts.pca(), which only
+#                      supports mode="branch" -- eigenvectors of the local
+#                      genealogy of the very region being fine-mapped. In the
+#                      cattle arm (4*Ne*r*L of order 10-40 across 2 Mb) that
+#                      spans most of the genotype space and absorbs the causal
+#                      variant along with it. See scripts/run_plink_glm.sh for
+#                      the measured effect.
 
 set -euo pipefail
 
@@ -44,7 +53,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-for v in PHENO GENO PCA TRAIT LD_CTRL DAPG TABIX OUT LOG; do
+for v in PHENO GENO TRAIT LD_CTRL DAPG TABIX OUT LOG; do
     [ -n "${!v}" ] || { echo "missing required --$(echo $v | tr A-Z a-z)" >&2; exit 1; }
 done
 
@@ -81,7 +90,12 @@ TMP_SBAMS="$TASK_TMP/locus.sbams"
 
 awk -v t="$TRAIT" '$2 == t' "$PHENO" > "$TMP_SBAMS"
 "$TABIX" "$GENO" "1:${START}-${END}" | cut -f3- >> "$TMP_SBAMS"
-cat "$PCA" >> "$TMP_SBAMS"
+# Covariates are optional now and the pipeline supplies none. An `if` block
+# rather than `[ -n "$PCA" ] && cat ...` because `set -e` is on and a trailing
+# false test would abort the script.
+if [ -n "$PCA" ]; then
+    cat "$PCA" >> "$TMP_SBAMS"
+fi
 
 echo "dap-g: $TRAIT (pos $POSITION, $THREADS threads)"
 "$DAPG" -d "$TMP_SBAMS" --output_all -t "$THREADS" -msize 5 \

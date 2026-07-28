@@ -187,6 +187,42 @@ but the config requests a different seed (`stage1_seed: 99`), the pipeline
 fails with `WorkflowError` rather than silently regenerating.
 Either update the config or remove the search dir.
 
+## Trait selection cap (optional)
+
+Bounds the number of traits fine-mapped (and colocalized via fastEnloc) per
+replicate, sharing the budget across a category of replicate runs
+(e.g. A1, A2, A3, A4). Add three optional fields to each replicate's config:
+
+```yaml
+selection_cap: 1500        # total cap across replicates in the category
+selection_seed: 42         # RNG seed (shared across replicates)
+num_replicates: 4          # category size (e.g. 4 for A1-A4)
+```
+
+When set, the `stage3_manifest` checkpoint emits a per-replicate quota of
+`ceil(selection_cap / num_replicates)` trait IDs, drawn from a
+`(selection_seed, stage1_seed)`-seeded permutation of the pheno file's traits.
+Quota = `ceil(1500/4) = 375` per replicate; total ≈ `selection_cap`, slightly
+over-shooting when the division is not exact.
+
+The same trait subset is used across `hgwas`, `hgtex`, and `hgtex_smaller`
+within a replicate, because all three tiers derive from the same
+`ccausative_maf01` position set in stage 2.
+
+**Extending the cap later.** Raise `selection_cap` (e.g. 1500 → 1700) and rerun
+snakemake. The permutation is fixed by the seed, so the new quota (`ceil(1700/4) = 425`)
+extends the previous prefix — already-completed DAP-G/fastEnloc outputs are
+reused, and only the newly-selected traits run.
+
+**Caveats:**
+- Replicates with fewer available traits than their quota take all available
+  and do not redistribute. Actual total fine-mapped can fall below
+  `selection_cap` if individual replicates are small.
+- `selection_cap` not divisible by `num_replicates` over-shoots by up to
+  `num_replicates − 1` traits in aggregate.
+- If `selection_cap` is unset, the checkpoint falls back to the previous
+  behavior (fine-map every trait in the pheno file).
+
 ## Workdir vs publishdir
 
 - `workdir`: where intermediate jobs run; defaults to `/n/scratch/...`. Fast,
@@ -355,16 +391,18 @@ submit() {
   local ID=$1 CFG=$2 BASE=$3 SEED=$4 GWAS=$5 GTEX=$6 QV=$7 NEUTRAL=$8 EXTRA=$9 DEP=${10}
   sbatch --parsable \
     --job-name=snake_${ID}_sd${SEED} \
-    --partition=priority --time=7-00:00:00 --mem=4G --cpus-per-task=1 \
+    --partition=long --time=7-00:00:00 --mem=4G --cpus-per-task=1 \
     --output=$SIMS_SCRATCH/$ID/logs/controller_%j.out \
     --error=$SIMS_SCRATCH/$ID/logs/controller_%j.err \
     --chdir=$SUBMIT_DIR \
     $DEP \
-    --wrap="$SNAKEMAKE --configfile $CFG \
+    --wrap="$SNAKEMAKE --snakefile $SUBMIT_DIR/Snakefile \
+      --directory $SIMS_SCRATCH/$ID \
+      --configfile $SUBMIT_DIR/$CFG \
       --config basename=${ID}_${BASE} stage1_seed=$SEED stage2_seed=$SEED \
                gwas_size=$GWAS gtex_size=$GTEX Q_scaling=$QV neutral_trait_vars=$NEUTRAL \
                workdir=$SIMS_SCRATCH/$ID publishdir=$SIMS_PUB/$ID $EXTRA \
-      --profile profiles/o2 -j 200 --keep-going --rerun-incomplete"
+      --profile $SUBMIT_DIR/profiles/o2 -j 200 --keep-going --rerun-incomplete"
 }
 
 # ---- A: human, 8k GWAS, multi-GTEx, directional negative selection ----
@@ -402,11 +440,11 @@ JOB_G4=$(submit G4 config/cattle_sel_not_bottlenecked.yaml cattle_sel_nobot 74 8
 # ---- C and D: held last via --dependency=afterany on every prior controller ----
 DEP="--dependency=afterany:$JOB_A1:$JOB_A2:$JOB_A3:$JOB_A4:$JOB_B1:$JOB_B2:$JOB_B3:$JOB_B4:$JOB_E1:$JOB_E2:$JOB_E3:$JOB_E4:$JOB_F1:$JOB_F2:$JOB_F3:$JOB_F4:$JOB_G1:$JOB_G2:$JOB_G3:$JOB_G4"
 
-# C: human, 100k GWAS, 50k GTEx, directional negative selection
-JOB_C1=$(submit C1 config/human.yaml human 31 100000 50000 1 False "" "$DEP"); echo "C1 $JOB_C1"
+# C: human, 50k GWAS, 50k GTEx, directional negative selection, L=2.5 Mb
+JOB_C1=$(submit C1 config/human.yaml human 31 50000 50000 1 False "L=2500000" "$DEP"); echo "C1 $JOB_C1"
 
-# D: human, 100k GWAS, 50k GTEx, neutral trait variants
-JOB_D1=$(submit D1 config/human.yaml human 41 100000 50000 1 True  "" "$DEP"); echo "D1 $JOB_D1"
+# D: human, 50k GWAS, 50k GTEx, neutral trait variants, L=2.5 Mb
+JOB_D1=$(submit D1 config/human.yaml human 41 50000 50000 1 True  "L=2500000" "$DEP"); echo "D1 $JOB_D1"
 EOF
 ```
 
@@ -415,6 +453,148 @@ Monitor progress with:
 ```bash
 ssh o2 'squeue -u $USER --format="%.10i %.30j %.2t %.10M %.5D %R"'
 ssh o2 'sacct -u $USER --format=JobID,JobName,State,Elapsed,MaxRSS --starttime=$(date -d "1 day ago" +%Y-%m-%d)'
+```
+
+# Re-run stages 3-4 at r2 = 0.25 (parallel result set)
+
+Goal: produce a second set of stage-3 (DAP-G) + stage-4 (fastEnloc) outputs at
+`ld_ctrl=0.25` next to the existing `ld_ctrl=0.75` results, for A/B/E/F/G (no C
+or D). Stages 1, 2, and 5 are reused from the original runs.
+
+The new outputs are namespaced by `output_tag=r2_0_25`:
+
+| File                          | r2 = 0.75 (default)                                | r2 = 0.25 (new)                                                |
+| ----------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
+| DAP-G loci                    | `stage3/<run>/<cat>/outputs/{trait}.dapg.out`      | `stage3/<run>/<cat>/outputs_r2_0_25/{trait}.dapg.out`          |
+| DAP-G logs                    | `stage3/<run>/<cat>/logs/{trait}.dapg.out`         | `stage3/<run>/<cat>/logs_r2_0_25/{trait}.dapg.out`             |
+| stage-3 done sentinel         | `stage3/<run>/<cat>/.stage3.done`                  | `stage3/<run>/<cat>/.stage3.r2_0_25.done`                      |
+| fastEnloc per gtex_cat        | `stage4/<run>/{basename}.{gtex_cat}.enloc.*.out`   | `stage4/<run>/{basename}.r2_0_25.{gtex_cat}.enloc.*.out`       |
+
+The original (r2=0.75) files are untouched. Each rep reuses its existing
+`$SIMS_SCRATCH/<ID>/` workdir so stages 1/2 and the stage-3 genotype index +
+manifest are detected as up-to-date.
+
+## Resource-estimation phase (10 jobs)
+
+Submit one snakemake controller per rep in A1/B1/E1/F1/G1, each targeting just
+two stage-3 DAP-G outputs (the first trait of each category's manifest). After
+they complete, read `MaxRSS` / `Elapsed` from `sacct` and scale by 1.5x to size
+the production submission.
+
+```bash
+ssh o2.hms.harvard.edu << 'EOF'
+set -e
+SIMS_PUB=/n/data2/hms/dbmi/sunyaev/lab/nconnally/simulations_for_revision
+SIMS_SCRATCH=/n/scratch/users/n/njc12/snakemake/simulations_for_revision
+SUBMIT_DIR=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake
+SNAKEMAKE=/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake
+
+# Test: ID CFG BASE SEED Q NEUTRAL GWAS_CAT GTEX_CAT
+submit_r2_test() {
+  local ID=$1 CFG=$2 BASE=$3 SEED=$4 QV=$5 NEUTRAL=$6 GWAS_CAT=$7 GTEX_CAT=$8
+  # Resolve stage2_run_tag (single subdir of stage3/ in this workdir) and the
+  # first trait of each category's manifest.
+  local RUN_TAG TRAIT_G TRAIT_T
+  RUN_TAG=$(basename $(ls -1d $SIMS_SCRATCH/$ID/stage3/*/ | head -1))
+  TRAIT_G=$(head -1 $SIMS_SCRATCH/$ID/stage3/$RUN_TAG/${GWAS_CAT}/manifest.txt)
+  TRAIT_T=$(head -1 $SIMS_SCRATCH/$ID/stage3/$RUN_TAG/${GTEX_CAT}/manifest.txt)
+  sbatch --parsable \
+    --job-name=snake_${ID}_r2_025_test \
+    --partition=short --time=8:00:00 --mem=4G --cpus-per-task=1 \
+    --output=$SIMS_SCRATCH/$ID/logs/controller_r2_025_test_%j.out \
+    --error=$SIMS_SCRATCH/$ID/logs/controller_r2_025_test_%j.err \
+    --chdir=$SUBMIT_DIR \
+    --wrap="$SNAKEMAKE --snakefile $SUBMIT_DIR/Snakefile \
+      --directory $SIMS_SCRATCH/$ID \
+      --configfile $SUBMIT_DIR/$CFG \
+      --config basename=${ID}_${BASE} stage1_seed=$SEED stage2_seed=$SEED \
+               gwas_size=8000 gtex_size=-1 Q_scaling=$QV neutral_trait_vars=$NEUTRAL \
+               ld_ctrl=0.25 output_tag=r2_0_25 \
+               workdir=$SIMS_SCRATCH/$ID publishdir=$SIMS_PUB/$ID \
+      --profile $SUBMIT_DIR/profiles/o2 -j 2 --rerun-incomplete \
+      $SIMS_SCRATCH/$ID/stage3/$RUN_TAG/${GWAS_CAT}/outputs_r2_0_25/${TRAIT_G}.dapg.out \
+      $SIMS_SCRATCH/$ID/stage3/$RUN_TAG/${GTEX_CAT}/outputs_r2_0_25/${TRAIT_T}.dapg.out"
+}
+
+submit_r2_test A1 config/human.yaml                          human                          11 10   False hgwas hgtex
+submit_r2_test B1 config/human.yaml                          human                          21 10   True  hgwas hgtex
+submit_r2_test E1 config/cattle_baseline_from_midpoint.yaml  cattle_baseline_from_midpoint  51 0.01 False cgwas cgtex
+submit_r2_test F1 config/cattle_sel_bottlenecked.yaml        cattle_sel_bot                 61 0.01 False cgwas cgtex
+submit_r2_test G1 config/cattle_sel_not_bottlenecked.yaml    cattle_sel_nobot               71 0.01 False cgwas cgtex
+EOF
+```
+
+After all 10 DAP-G jobs complete, inspect:
+
+```bash
+ssh o2 'sacct -u $USER --starttime=$(date -d "1 day ago" +%Y-%m-%d) \
+        --format=JobID,JobName%40,State,Elapsed,MaxRSS,ReqMem' | grep stage3_dapg_locus
+```
+
+Then bump `_dapg_mem_mb_base` (in `simulations/rules/common.smk` lines ~152-174)
+and the `runtime` lambda (line ~209) to `ceil(1.5 * MaxRSS)` /
+`ceil(1.5 * Elapsed)` per category. If any test exceeds ~9h (1.5 x 6h
+current ceiling), escalate the gwas partition from `short` to `medium` for
+the production run.
+
+## Production submission (20 reps: A1-4, B1-4, E1-4, F1-4, G1-4)
+
+After resources are tuned, submit the full r2=0.25 set. Targeting `stage4`
+(not `all`) prevents the stage-5 plink GLM rules from being scheduled.
+
+```bash
+ssh o2.hms.harvard.edu << 'EOF'
+set -e
+SIMS_PUB=/n/data2/hms/dbmi/sunyaev/lab/nconnally/simulations_for_revision
+SIMS_SCRATCH=/n/scratch/users/n/njc12/snakemake/simulations_for_revision
+SUBMIT_DIR=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake
+SNAKEMAKE=/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake
+
+# ID CFG BASE SEED GWAS_SIZE GTEX_SIZE QV NEUTRAL EXTRA
+submit_r2() {
+  local ID=$1 CFG=$2 BASE=$3 SEED=$4 GWAS=$5 GTEX=$6 QV=$7 NEUTRAL=$8 EXTRA=$9
+  sbatch --parsable \
+    --job-name=snake_${ID}_r2_025_sd${SEED} \
+    --partition=long --time=7-00:00:00 --mem=4G --cpus-per-task=1 \
+    --output=$SIMS_SCRATCH/$ID/logs/controller_r2_025_%j.out \
+    --error=$SIMS_SCRATCH/$ID/logs/controller_r2_025_%j.err \
+    --chdir=$SUBMIT_DIR \
+    --wrap="$SNAKEMAKE --snakefile $SUBMIT_DIR/Snakefile \
+      --directory $SIMS_SCRATCH/$ID \
+      --configfile $SUBMIT_DIR/$CFG \
+      --config basename=${ID}_${BASE} stage1_seed=$SEED stage2_seed=$SEED \
+               gwas_size=$GWAS gtex_size=$GTEX Q_scaling=$QV neutral_trait_vars=$NEUTRAL \
+               ld_ctrl=0.25 output_tag=r2_0_25 \
+               workdir=$SIMS_SCRATCH/$ID publishdir=$SIMS_PUB/$ID $EXTRA \
+      --profile $SUBMIT_DIR/profiles/o2 -j 200 --keep-going --rerun-incomplete \
+      stage4"
+}
+
+# A: human, 8k GWAS, multi-GTEx, directional negative selection
+for i in 1 2 3 4; do submit_r2 A$i config/human.yaml                         human                         $((10+i)) 8000 -1 10   False ""; done
+# B: human, 8k GWAS, multi-GTEx, neutral trait variants
+for i in 1 2 3 4; do submit_r2 B$i config/human.yaml                         human                         $((20+i)) 8000 -1 10   True  ""; done
+# E: cattle baseline-from-midpoint, multi-GTEx, directional negative
+for i in 1 2 3 4; do submit_r2 E$i config/cattle_baseline_from_midpoint.yaml cattle_baseline_from_midpoint $((50+i)) 8000 -1 0.01 False ""; done
+# F: cattle, bottlenecked, directional positive selection
+for i in 1 2 3 4; do submit_r2 F$i config/cattle_sel_bottlenecked.yaml       cattle_sel_bot                $((60+i)) 8000 -1 0.01 False ""; done
+# G: cattle, non-bottlenecked, directional positive selection
+for i in 1 2 3 4; do submit_r2 G$i config/cattle_sel_not_bottlenecked.yaml   cattle_sel_nobot              $((70+i)) 8000 -1 0.01 False ""; done
+EOF
+```
+
+Sanity checks after a rep completes:
+
+```bash
+# Outputs match the manifest, one per trait.
+ls $SIMS_SCRATCH/A1/stage3/$RUN_TAG/hgwas/outputs_r2_0_25/ | wc -l
+wc -l $SIMS_SCRATCH/A1/stage3/$RUN_TAG/hgwas/manifest.txt
+
+# Stage-4 result set exists.
+ls $SIMS_SCRATCH/A1/stage4/$RUN_TAG/A1_human.r2_0_25.*.enloc.*.out
+
+# Existing r2=0.75 outputs are unmodified (mtime check).
+stat -c '%y %n' $SIMS_SCRATCH/A1/stage3/$RUN_TAG/hgwas/outputs/*.dapg.out | head
 ```
 
 

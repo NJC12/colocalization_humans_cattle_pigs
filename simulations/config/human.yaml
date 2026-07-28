@@ -10,7 +10,12 @@ species_prefix: h
 # Q=10 gives ~9k EUR individuals (suffices for 8k GWAS + 1k GTEx, i.e. A/B
 # in the README table). Override to Q=1 for the 150k-individual C/D runs.
 Q_scaling: 10
-L: 1000000
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+recombination_rate: 1.282e-8
+L: 10000000
+dapg_window: 250000
 gwas_h2: 0.01
 gtex_h2: 0.4
 
@@ -32,20 +37,44 @@ stage3_seed: 1
 stage4_seed: 1
 stage5_seed: 1
 
+# ---- Trait selection cap (optional) ----
+# Set all three to enable a category-wide cap on fine-mapped traits.
+# Each replicate independently selects ceil(selection_cap / num_replicates)
+# traits, seeded by (selection_seed, stage1_seed). Raising selection_cap on
+# a later run extends the prefix without reshuffling, so already-completed
+# DAP-G/fastEnloc jobs remain valid.
+# selection_cap: 1500
+# selection_seed: 42
+# num_replicates: 4
+
 # ---- Search dirs ----
-stage1_search_dirs:
-  - /n/scratch/users/n/njc12/sims/tmp
-  - /Users/noah/tmp/selsims/largesim
-  - /Users/noah/tmp/selsims
-  - /Users/noah/comparative_colocalization/data/simulations/demographic_simulations/human
-stage2_search_dirs:
-  - /Users/noah/tmp/selsims/largesim/outputs
+# Round-2 (new DFE) starts from scratch; legacy dirs intentionally omitted to
+# avoid silently reusing old-DFE .ts files.
+# NOTE: /n/scratch/users/n/njc12/sims/tmp was removed because
+# human_simulation_o2.py writes there unconditionally, with no L/Q encoding
+# in the filename — a cache hit across L changes silently adopted stale ts
+# files (the L=1Mb -> L=10Mb cutover bug, 2026-05-21). Re-add only if cache
+# can be guaranteed parameter-consistent (e.g., after L-aware filenames).
+stage1_search_dirs: []
+stage2_search_dirs: []
 
 # ---- Stage 3/4 specifics ----
 ld_ctrl: 0.75
 fastenloc_total_snps: auto    # "auto" = intersection of gwas+gtex annotation VCF SNP IDs; or set an int
 already_includes_neutral: True
 
+# Categories to drop from stages 3/4/5 fan-out. Stage-2 outputs that already
+# exist on disk are not deleted; downstream stages just stop targeting these
+# categories until the entry is removed.
+#
+# 2026-05-26: skip_categories: hgtex_smallest is now hard-coded in
+# helpers/paths.py:stage2_categories() (the smallest category is no longer
+# appended to the cats list when gtex_size=-1), so this YAML entry is
+# redundant. Left commented for documentation; uncomment to skip additional
+# categories without code changes.
+# skip_categories:
+#   - hgtex_smallest
+
 # ---- Workdir / publish ----
-workdir: /n/scratch/users/n/njc12/snakemake/human
-publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/human
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2/human
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2/human

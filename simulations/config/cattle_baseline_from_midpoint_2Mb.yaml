@@ -1,0 +1,68 @@
+# Cattle baseline replicate, 2 Mb region, continued from the shared epoch_8
+# checkpoint produced by cattle_baseline_2Mb. Runs epochs 8-12 only via
+# farm_selection_from_ep8.slim (num_muts_selected=0), then stages 2-5.
+#
+# This is the per-replicate config: submit it 8x, overriding stage1_seed,
+# stage2_seed, workdir, and publishdir per replicate on the command line, e.g.
+#   --config stage1_seed=53 stage2_seed=53 \
+#            workdir=/n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_E3 \
+#            publishdir=/n/data2/.../simulations_round_2_2Mb/cattle_E3
+# (E{N} -> seed 5{N}: E1=51 ... E8=58.)
+
+pipeline: cattle_baseline_from_midpoint
+species: cattle
+basename: cattle_baseline_from_midpoint
+species_prefix: c
+
+# ---- Demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+recombination_rate: 9.26e-9
+L: 2000000
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds ----
+# cattle_baseline_seed identifies the shared 2 Mb baseline whose epoch_8.ts we
+# load; it is the same for all 8 replicates. stage1_seed is THIS replicate's
+# continuation seed (overridden per replicate on the command line).
+cattle_baseline_seed: 20250303
+stage1_seed: 51
+stage2_seed: 51
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Point at the shared 2 Mb baseline's stage1 dir (where its epoch_8.ts lives).
+cattle_baseline_search_dirs:
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_baseline/stage1
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/cattle_baseline_from_midpoint
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2_2Mb/cattle_baseline_from_midpoint

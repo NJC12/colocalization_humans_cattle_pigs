@@ -11,17 +11,23 @@ initialize() {
     defineConstant("output_file", file_out);
     defineConstant("starting_tick", tick);
 
-    if (Q != 1) {
-        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
-    }
-    defineConstant("recombination_rates", _recombination_rates);
+    // Recombination rate comes from the caller (config key `recombination_rate`)
+    // rather than a literal -- see farm_burn_in_e2.slim for why.
+    if (!exists("recomb_rate"))
+        stop("ERROR: -d recomb_rate=<float> is required (config key `recombination_rate`)");
+    // Q-scaled per-tick rate. Exact at Q == 1, where it reduces to recomb_rate;
+    // the old `if (Q != 1)` guard left this unassigned at Q == 1 and the next
+    // line then referenced it, which the Q=1 deep-history run would hit.
+    defineConstant("recombination_rates", (1 - (1 - 2 * recomb_rate)^Q) / 2);
     defineConstant("recombination_ends", L-1);
     initializeRecombinationRate(recombination_rates, recombination_ends);
     defineConstant("metadata", Dictionary("Q", Q));
 
-    // Starting with the original 17000, even though we don't use it
-    defineConstant("ep_sizes", c(17000, 10000, 7000, 3500, 2500, 2000, 1500, 1000, 350, 250, 120, 90));
-    defineConstant("ep_lengths", c(29800, 1000, 600, 1100, 200, 300, 130, 6, 6, 6, 3, 3));
+    // Index 0 is a dummy padding entry so epoch N maps to index N (matches
+    // farm_selection_from_ep8.slim). Index 1 (17000 / 29800) is epoch 1, which
+    // is the burn-in -- it is replaced by the read-in checkpoint, not re-run here.
+    defineConstant("ep_sizes",   c(0, 17000, 10000, 7000, 3500, 2500, 2000, 1500, 1000, 350, 250, 120, 90));
+    defineConstant("ep_lengths", c(0, 29800,  1000,  600, 1100,  200,  300,  130,    6,   6,   6,   3,   3));
 
     // Neutral mutations will be added later
     // Two categories of deleterious mutations: m1 & m2
@@ -31,13 +37,12 @@ initialize() {
     // The ratio is 5:1 because we care only about the
     // non-neutral fraction of the genome, which is enriched for coding
     // We will also add a small number of positively selected mutations
-    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
-    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m1", 0.5, "e", Q * -4e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);
     initializeMutationType("m3", 0.5, "e", Q * 0.005);
-    initializeGenomicElementType("g1", c(m1, m2, m3), c(0.83, 0.16, 0.01));
+    initializeGenomicElementType("g1", c(m1, m2, m3), c(0.975, 0.024, 0.001));
     initializeGenomicElement(g1, 0, L-1);
-    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
-    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
+    initializeMutationRate(Q * 5.6e-9, c(L-1)); // DFE-applied rate = 1.4e-8 * 0.4 (unscaled); neutral 8.4e-9 added downstream
 
     defineGlobal("startE2", -1);
     defineGlobal("startE3", -1);
@@ -53,22 +58,45 @@ initialize() {
     defineGlobal("end_tick", -1);
 }
 
-// Epoch 1
-1 late() { 
+// Epoch 1 == the burn-in. Read its equilibrated endpoint, confirm the size,
+// then schedule every subsequent epoch boundary up front.
+1 late() {
     sim.readFromPopulationFile(file_in);
-    print("File read in");
+    print("File read in at tick " + sim.cycle);
     for (subpop in sim.subpopulations) {
         print(" - " + subpop.id + ": " + subpop.individualCount + " individuals");
     }
-    // startE2 = asInteger(sim.cycle + 1);
-    startE2 = asInteger(sim.cycle + 1);
+
+    // Confirm the burn-in population matches the epoch-1 size (17000/Q).
+    expected_size = asInteger(ep_sizes[1] / Q);
+    if (p0.individualCount != expected_size)
+        stop("ERROR: read-in pop size " + p0.individualCount +
+             " != expected epoch-1 size " + expected_size + " (ep_sizes[1]/Q)");
+
+    // Precompute every epoch boundary relative to the read-in tick. A bare
+    // assignment inside an event creates a throwaway local (Eidos R-style
+    // scoping; see SLiM issue #430), so cross-tick state MUST go through
+    // defineGlobal(). Epoch 2 (size 10000/Q = 1M) begins one tick after read-in.
+    defineGlobal("startE2",  sim.cycle + 1);
+    defineGlobal("startE3",  asInteger(startE2  + ep_lengths[2]/Q));
+    defineGlobal("startE4",  asInteger(startE3  + ep_lengths[3]/Q));
+    defineGlobal("startE5",  asInteger(startE4  + ep_lengths[4]/Q));
+    defineGlobal("startE6",  asInteger(startE5  + ep_lengths[5]/Q));
+    defineGlobal("startE7",  asInteger(startE6  + ep_lengths[6]/Q));
+    defineGlobal("startE8",  asInteger(startE7  + ep_lengths[7]/Q));
+    defineGlobal("startE9",  asInteger(startE8  + ep_lengths[8]/Q));
+    defineGlobal("startE10", asInteger(startE9  + ep_lengths[9]/Q));
+    defineGlobal("startE11", asInteger(startE10 + ep_lengths[10]/Q));
+    defineGlobal("startE12", asInteger(startE11 + ep_lengths[11]/Q));
+    defineGlobal("end_tick", asInteger(startE12 + ep_lengths[12]/Q));
     print("Current tick: " + sim.cycle);
-    print("startE2: " + startE2);
+    print("Scheduled startE2=" + startE2 + " ... startE12=" + startE12 + " end_tick=" + end_tick);
 }
 
-// early() {
-25001: early() {
-    // print("Loop!");
+// Epoch driver. Runs every tick after the read-in (guard is tick-agnostic: it
+// engages on the first tick after the `1 late()` read regardless of the burn-in
+// checkpoint's stored tick). All boundaries were precomputed in `1 late()`.
+2: early() {
     if (sim.cycle % 100 == 0) {
         print("Tick " + sim.cycle);
     }
@@ -78,127 +106,96 @@ initialize() {
         sim.treeSeqOutput(output_dir + output_file + ".tick_" + sim.cycle + ".ts", metadata=metadata);
     }
 
-    // Epoch 2
+    // Epoch 2 -- begins one tick after read-in; size 10000/Q = 1M.
     if (sim.cycle == startE2) {
         p0.setSubpopulationSize(asInteger(ep_sizes[2]/Q));
-        print("Epock 2 begins - tick " + sim.cycle);
-        startE3 = asInteger(sim.cycle + ep_lengths[2]/Q);
-        print("startE3: " + startE3);
+        print("Epoch 2 begins - tick " + sim.cycle);
     }
 
     // Epoch 3
     if (sim.cycle == startE3) {
-        // sim.outputFull(output_dir + output_file + ".ep2.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep2.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[3]/Q));
-        print("Epock 3 begins - tick " + sim.cycle);
-        startE4 = asInteger(sim.cycle + ep_lengths[3]/Q);
+        print("Epoch 3 begins - tick " + sim.cycle);
     }
 
     // Epoch 4
     if (sim.cycle == startE4) {
-        // sim.outputFull(output_dir + output_file + ".ep3.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep3.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[4]/Q));
-        print("Epock 4 begins - tick " + sim.cycle);
-        startE5 = asInteger(sim.cycle + ep_lengths[4]/Q);
+        print("Epoch 4 begins - tick " + sim.cycle);
     }
 
     // Epoch 5
     if (sim.cycle == startE5) {
-        // sim.outputFull(output_dir + output_file + ".ep4.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep4.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[5]/Q));
-        print("Epock 5 begins - tick " + sim.cycle);
-        startE6 = asInteger(sim.cycle + ep_lengths[5]/Q);
+        print("Epoch 5 begins - tick " + sim.cycle);
     }
 
     // Epoch 6
     if (sim.cycle == startE6) {
-        // sim.outputFull(output_dir + output_file + ".ep5.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep5.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[6]/Q));
-        print("Epock 6 begins - tick " + sim.cycle);
-        startE7 = asInteger(sim.cycle + ep_lengths[6]/Q);
+        print("Epoch 6 begins - tick " + sim.cycle);
     }
 
     // Epoch 7
     if (sim.cycle == startE7) {
-        // sim.outputFull(output_dir + output_file + ".ep6.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep6.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[7]/Q));
-        print("Epock 7 begins - tick " + sim.cycle);
-        startE8 = asInteger(sim.cycle + ep_lengths[7]/Q);
+        print("Epoch 7 begins - tick " + sim.cycle);
     }
 
     // Epoch 8
     if (sim.cycle == startE8) {
-        // sim.outputFull(output_dir + output_file + ".ep7.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep7.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[8]/Q));
-        print("Epock 8 begins - tick " + sim.cycle);
-        startE9 = asInteger(sim.cycle + ep_lengths[8]/Q);
+        print("Epoch 8 begins - tick " + sim.cycle);
     }
 
-    // Epoch 9
+    // Epoch 9 -- writes the epoch-8 checkpoint that cattle_sel / from_midpoint
+    // consume. The name MUST match helpers/paths.py:stage1_cattle_baseline_epoch_8
+    // (".epoch_8.ts"); an earlier ".ep8.ts" here broke the from-ep8 lookup.
     if (sim.cycle == startE9) {
-        // sim.outputFull(output_dir + output_file + ".ep8.txt", binary=T);
         sim.treeSeqSimplify();
-        sim.treeSeqOutput(output_dir + output_file + ".ep8.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
+        sim.treeSeqOutput(output_dir + output_file + ".epoch_8.ts", metadata=metadata);
         p0.setSubpopulationSize(asInteger(ep_sizes[9]/Q));
-        print("Epock 9 begins - tick " + sim.cycle);
-        startE10 = asInteger(sim.cycle + ep_lengths[9]/Q);
+        print("Epoch 9 begins - tick " + sim.cycle);
     }
 
     // Epoch 10
     if (sim.cycle == startE10) {
-        // sim.outputFull(output_dir + output_file + ".ep9.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep9.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[10]/Q));
-        print("Epock 10 begins - tick " + sim.cycle);
-        startE11 = asInteger(sim.cycle + ep_lengths[10]/Q);
+        print("Epoch 10 begins - tick " + sim.cycle);
     }
 
     // Epoch 11
     if (sim.cycle == startE11) {
-        // sim.outputFull(output_dir + output_file + ".ep10.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep10.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[11]/Q));
-        print("Epock 11 begins - tick " + sim.cycle);
-        startE12 = asInteger(sim.cycle + ep_lengths[11]/Q);
+        print("Epoch 11 begins - tick " + sim.cycle);
     }
 
-// Epoch 12
+    // Epoch 12
     if (sim.cycle == startE12) {
-        // sim.outputFull(output_dir + output_file + ".ep11.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".ep11.ts", metadata=metadata);
-        // sim.treeSeqSimplify();
         p0.setSubpopulationSize(asInteger(ep_sizes[12]/Q));
-        print("Epock 12 begins - tick " + sim.cycle);
-        end_tick = asInteger(sim.cycle + ep_lengths[12]/Q);
+        print("Epoch 12 begins - tick " + sim.cycle);
     }
 
     // End of simulation
     if (sim.cycle == end_tick) {
-        // sim.outputFull(output_dir + output_file + ".full.txt", binary=T);
         sim.treeSeqSimplify();
         sim.treeSeqOutput(output_dir + output_file + ".full.ts", metadata=metadata);
         sim.simulationFinished();

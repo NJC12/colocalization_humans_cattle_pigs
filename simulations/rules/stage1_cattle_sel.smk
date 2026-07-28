@@ -28,7 +28,7 @@ def _stage1_cattle_sel_inputs(wc):
     if full_hit and marks_hit:
         return {"existing_full": full_hit, "existing_marks": marks_hit, "epoch_8": []}
     epoch_8_hit = search_dirs.find_in_search_dirs(
-        paths.stage1_cattle_baseline_epoch_8(config),
+        paths.stage1_cattle_baseline_handoff(config),
         config.get("cattle_baseline_search_dirs", []),
         expected_seed=config["cattle_baseline_seed"],
     )
@@ -53,6 +53,7 @@ rule stage1_cattle_sel:
         seed        = config["stage1_seed"],
         Q           = config["Q_scaling"],
         L           = config["L"],
+        recomb      = config["recombination_rate"],
         mult        = config["selection_multiplier"],
         gen         = config["selected_generations"],
         muts        = config["num_muts_selected"],
@@ -63,13 +64,19 @@ rule stage1_cattle_sel:
         out_base    = paths.stage1_cattle_sel_full(config).replace(".full.ts", ""),
     log: os.path.join(paths.workdir(config), "logs", "stage1_cattle_sel.log")
     resources:
-        # Loads epoch_8.ts and runs ~24 scaled ticks (epochs 8-12, populations
-        # capped at 1,000 individuals decreasing to 90) on a 10 Mb genome.
-        # Hours of compute, not days; 30 days/150 GB was a copy-paste from
-        # run_farm_selection.sh which runs the full epoch 1-12 chain.
+        # Loads the handoff checkpoint and runs epochs 8-12 (populations 1,000
+        # decreasing to 90, census 1/Q times that) -- the same SLiM script as
+        # stage1_cattle_baseline_from_midpoint, plus positive selection.
+        #
+        # Kept at 2h/8 GB rather than that rule's measured 1h/4 GB: categories
+        # F and G have NOT been run under round-3 code, so there is no direct
+        # measurement here. E1 took 4:29 / 600 MB at L=2 Mb, and adding selected
+        # mutations should not change that much, but G in particular behaved
+        # very differently from E in round 2 (see _dapg_mem_mb_base). Tighten
+        # once F/G have actually run.
         slurm_partition = "short",
-        runtime = 8 * 60,
-        mem_mb  = 32000,
+        runtime = 2 * 60,
+        mem_mb  = 8000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
@@ -82,14 +89,15 @@ rule stage1_cattle_sel:
             exit 0
         fi
         if [ -z "{input.epoch_8}" ]; then
-            echo "stage1_cattle_sel: no epoch_8 checkpoint found in cattle_baseline_search_dirs" >&2
-            echo "Add the dir containing farm_selection_Q_*.L_*.seed_*.epoch_8.ts to cattle_baseline_search_dirs in your config." >&2
+            echo "stage1_cattle_sel: no end-of-epoch-7 handoff checkpoint found in cattle_baseline_search_dirs" >&2
+            echo "Add the dir containing farm_selection_Q_*.L_*.seed_*.ep7.ts to cattle_baseline_search_dirs in your config." >&2
             exit 1
         fi
         {params.slim} -m -t -l \
             -s {params.seed} \
             -d Q_scaling={params.Q} \
             -d genome_length={params.L} \
+            -d recomb_rate={params.recomb} \
             -d selection_multiplier={params.mult} \
             -d selected_generations={params.gen} \
             -d num_muts_selected={params.muts} \

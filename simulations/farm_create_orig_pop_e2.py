@@ -8,10 +8,19 @@ import resource
 # Code adapted from pyslim and stdpopsim websites
 # def epoch1_demographic_model(Q, seq_len, farm_recomb_rate):
 def epoch1_demographic_model(seq_len, farm_recomb_rate, pop_size=17000):
+    # One rounded integer for both. These used to be `pop_size // Q` and
+    # `pop_size / Q`, which at Q=0.01 gave initial_size=1,699,999 against
+    # 1,700,000 sampled individuals -- harmless at that scale, but `/` also
+    # returns a float, and msprime rejects a sample count that is not exactly
+    # integral ("cannot be interpreted as sample specification"). 17000/0.01
+    # happens to land on 1700000.0 exactly; a Q whose reciprocal is less kind
+    # would fail hours into the job. The rounded int must still match SLiM's
+    # asInteger(ep_sizes[1]/Q) size check in farm_selection.slim.
+    n_indiv = int(round(pop_size / Q))
     demog_model = msprime.Demography()
-    demog_model.add_population(initial_size=pop_size // Q)
+    demog_model.add_population(initial_size=n_indiv)
     ots = msprime.sim_ancestry(
-            samples=pop_size / Q,
+            samples=n_indiv,
             demography=demog_model,
             recombination_rate= (1 - (1 - 2 * farm_recomb_rate)**Q)/2,
             sequence_length=seq_len)
@@ -34,7 +43,7 @@ def add_muts(ots, farm_mutation_rate):
     return ots
 
 def m1_muts(n):
-    muts = rng.exponential(scale=0.5e-4, size=n)
+    muts = rng.exponential(scale=4e-4, size=n)
     return -1*Q*muts
 
 def m2_muts(n):
@@ -46,7 +55,7 @@ def m3_muts(n):
     return Q*muts
 
 def selection_coeff_bulk(num_muts):
-    mut_types = rng.multinomial(num_muts, [0.83, 0.16, 0.01])
+    mut_types = rng.multinomial(num_muts, [0.975, 0.024, 0.001])
 
     m1s = m1_muts(mut_types[0])
     m2s = m2_muts(mut_types[1])
@@ -97,9 +106,28 @@ def main():
     parser.add_argument('--seed', type=int, required=True, help='Random seed')
     parser.add_argument('--Q', type=float, required=True, help='Slim scaling factor')
     parser.add_argument('--length', type=int, required=True, help='Sequence length')
+    parser.add_argument('--out_dir', type=str, required=False, default='/home/njc12/slim_simulations/farm_slim_outputs',
+                        help='Directory for the output .ts file')
+    parser.add_argument('--out_name', type=str, required=False, default=None,
+                        help='Output basename. Pass the exact name the caller expects '
+                             '(rules/stage1_cattle_baseline.smk passes '
+                             'paths.stage1_cattle_baseline_orig). Without it the name is '
+                             'rebuilt here from --Q, which does NOT round-trip: --Q is '
+                             'parsed as a float, so a config Q_scaling of int 1 becomes '
+                             '"Q_1.0" here while paths.py renders "Q_1". That never showed '
+                             'up while Q_scaling was always 0.01, which formats the same '
+                             'either way, but it breaks the Q=1 deep history.')
+    parser.add_argument('--recomb_rate', type=float, required=True,
+                        help='Per-bp per-generation recombination rate (config key '
+                             '`recombination_rate`). Required rather than defaulted: this '
+                             'stage used to hard-code 1.3e-8 while the SLiM stages that '
+                             'consume its output hard-coded 9.26e-9, so the deep genealogy '
+                             'and the forward phase disagreed. Must match the --recomb_rate '
+                             'passed to the human arm.')
     args = parser.parse_args()
     seed = args.seed
     length = args.length
+    out_dir = args.out_dir
 
     global Q
     Q = args.Q
@@ -109,8 +137,8 @@ def main():
     global rng
     rng = np.random.default_rng(seed)
     # farm_mutation_rate = 8.4e-9 / 40
-    farm_mutation_rate = 2.36e-8 / 40
-    farm_recomb_rate = 1.3e-8
+    farm_mutation_rate = 5.6e-9
+    farm_recomb_rate = args.recomb_rate
     # Default drift barrier value is 0
 
     print('Creating demographic model', flush=True)
@@ -130,7 +158,9 @@ def main():
     ots = add_selection_coeffs_bulk(ots)
     print(f'\tTime taken: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))}', flush=True)
 
-    out_name = f'/home/njc12/slim_simulations/farm_slim_outputs/farm_orig_pop.Q_{Q}.L_{length}.seed_{seed}.ts'
+    basename = args.out_name or f'farm_orig_pop.Q_{Q}.L_{length}.seed_{seed}.ts'
+    out_name = f'{out_dir.rstrip("/")}/{basename}'
+    print(f'Writing {out_name}', flush=True)
     ots.dump(out_name)
 
 

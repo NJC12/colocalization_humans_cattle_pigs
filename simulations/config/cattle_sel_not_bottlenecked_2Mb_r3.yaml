@@ -1,0 +1,81 @@
+# Category G: cattle + positive selection on 26 trait variants, WITHOUT
+# continued bottlenecking through the late epochs. 2 Mb region. Identical to
+# cattle_sel_bottlenecked_2Mb.yaml (category F) except continue_bottlenecking=0.
+# Per-replicate config: submit 10x, overriding stage1_seed/stage2_seed/workdir/
+# publishdir on the command line (G{N} -> 7{N}: G1=71 ... G10=80).
+
+pipeline: cattle_sel
+species: cattle
+basename: cattle_sel_nobot
+species_prefix: c
+
+# ---- Selection / demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+selection_multiplier: 100
+selected_generations: 23
+num_muts_selected: 26
+continue_bottlenecking: 0
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+# Cap the sampled pool at 9000 individuals -> GWAS 8000 + GTEx 1000, matching
+# bottlenecked E/F. Without this, the no-bottleneck population (~100k) would
+# yield a ~99k-individual GWAS (and OOM the stage-5 exact PCA). E/F need no cap:
+# their bottlenecked population is already ~9000.
+n_samples: 9000
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+cattle_baseline_seed: 20250303   # identifies the 2 Mb epoch_8.ts to load
+stage1_seed: 71
+stage2_seed: 71
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+cattle_baseline_search_dirs: 
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline/stage1
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_sel_nobot
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb/cattle_sel_nobot
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+# Split-Q handoff: epochs 8-12 = 600+600+600+300+300 = 2400 ticks at
+# Q_scaling=0.01; everything older ran at Q=1.
+handoff_ticks: 2400
+deep_Q_scaling: 1

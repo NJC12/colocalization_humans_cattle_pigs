@@ -27,7 +27,10 @@ function (float)mutTypeFrequency(o<MutationType>$ mutType) {
     return NULL;
 }
 function (float)estimateNe_Heterozygosity(o<Subpopulation>$ subpop) {
-    pi = calcHeterozygosity(p0.genomes);
+    // SLiM 5 renamed Subpopulation.genomes -> .haplosomes (Genome -> Haplosome).
+    // The round-2 cattle configs run this under the SLiM 5.2 wrapper (needed to
+    // read pyslim-1.1.1 epoch_8.ts), so the old .genomes property errors out.
+    pi = calcHeterozygosity(p0.haplosomes);
     return pi / (4 * MU);
 }
 function (integer)tabulateFecundity(o<Subpopulation>$ subpop, i$ previous_N) {
@@ -151,10 +154,14 @@ initialize() {
     else
         defineConstant("bottleneck", 1);
 
-    if (Q != 1) {
-        _recombination_rates = (1-(1 - 2 * 9.26e-09)^Q)/2;
-    }
-    defineConstant("recombination_rates", _recombination_rates);
+    // Recombination rate comes from the caller (config key `recombination_rate`)
+    // rather than a literal -- see farm_burn_in_e2.slim for why.
+    if (!exists("recomb_rate"))
+        stop("ERROR: -d recomb_rate=<float> is required (config key `recombination_rate`)");
+    // Q-scaled per-tick rate. Exact at Q == 1, where it reduces to recomb_rate;
+    // the old `if (Q != 1)` guard left this unassigned at Q == 1 and the next
+    // line then referenced it, which the Q=1 deep-history run would hit.
+    defineConstant("recombination_rates", (1 - (1 - 2 * recomb_rate)^Q) / 2);
     defineConstant("recombination_ends", L-1);
     initializeRecombinationRate(recombination_rates, recombination_ends);
     defineConstant("metadata", Dictionary("Q", Q));
@@ -172,15 +179,14 @@ initialize() {
     // The ratio is 5:1 because we care only about the
     // non-neutral fraction of the genome, which is enriched for coding
     // We will also add a small number of positively selected mutations
-    initializeMutationType("m1", 0.5, "e", Q * -5e-4); // Negative because deleterious
-    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);   // I need to check this
+    initializeMutationType("m1", 0.5, "e", Q * -4e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);
     initializeMutationType("m3", 0.5, "e", Q * 0.005);
     initializeMutationType("m4", 0.5, "f", 1e-10); // selection-mode target; proportion 0 means m4 is never freshly drawn
-    initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(0.83, 0.16, 0.01, 0));
+    initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(0.975, 0.024, 0.001, 0));
     initializeGenomicElement(g1, 0, L-1);
-    // initializeMutationRate(Q*c(8.4e-09 / 40), c(L-1)); // div by 40 for the target size of non-neutral genome
-    initializeMutationRate(Q*c(2.36e-8 / 40), c(L-1)); // Mutation rate matches human simulation, div by 40 for the target size of non-neutral genome
-    defineConstant("MU", Q*c(2.36e-8 / 40));
+    initializeMutationRate(Q * 5.6e-9, c(L-1)); // DFE-applied rate = 1.4e-8 * 0.4 (unscaled); neutral 8.4e-9 added downstream
+    defineConstant("MU", Q * 5.6e-9);
 
     defineGlobal("startE2", -1);
     defineGlobal("startE3", -1);
@@ -232,7 +238,14 @@ initialize() {
     print("| Current tick: " + sim.cycle);
 }
 
-25001: late() {
+// Tick-agnostic guard (`2:`, not a hard-coded `25001:`): every epoch boundary is
+// computed from sim.cycle in `1 late()` after the checkpoint is read, so the only
+// requirement is "any tick after the read". The old `25001:` silently no-opped
+// whenever the input checkpoint sat at or below tick 25000 -- the run would spin
+// to the 10000000 placeholder printing Ne and produce no output at all. That was
+// unreachable while the only input was a Q=0.01 epoch-8 checkpoint (tick ~358000),
+// but the Q=1 deep history hands off at a tick that depends on burn-in length.
+2: late() {
     p0.setValue("previous_N", p0.individualCount);
     if (pos_muts != 0 & sim.cycle == sample_tick) {
         print("| Sampling at tick " + sim.cycle);
@@ -263,9 +276,8 @@ initialize() {
     }
 }
 
-// early() {
-25001: early() { // Not sure what I'll have to change this to.
-// 434801: early() {
+// Epoch driver. Tick-agnostic for the same reason as the late() block above.
+2: early() {
 
     if (sim.cycle % 100 == 0) {
         print("| Tick " + sim.cycle);

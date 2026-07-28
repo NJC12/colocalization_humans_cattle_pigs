@@ -8,6 +8,11 @@ species_prefix: c
 
 # ---- Selection parameters (visible at a glance) ----
 Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+recombination_rate: 9.26e-9
 L: 10000000
 selection_multiplier: 100
 selected_generations: 23
@@ -30,22 +35,35 @@ stage3_seed: 1
 stage4_seed: 1
 stage5_seed: 1
 
+# ---- Trait selection cap (optional) ----
+# Set all three to enable a category-wide cap on fine-mapped traits.
+# Each replicate independently selects ceil(selection_cap / num_replicates)
+# traits, seeded by (selection_seed, stage1_seed). Raising selection_cap on
+# a later run extends the prefix without reshuffling, so already-completed
+# DAP-G/fastEnloc jobs remain valid.
+# selection_cap: 1500
+# selection_seed: 42
+# num_replicates: 4
+
 # ---- Search dirs (preferential order) ----
-cattle_baseline_search_dirs:
-  - /n/data2/hms/dbmi/sunyaev/lab/nconnally/comparative_colocalization/simulations/selection
+# Round-2 (new DFE) starts from scratch; legacy dirs intentionally omitted to
+# avoid silently reusing old-DFE .ts files. Populate with round-2 paths once a
+# baseline run exists under simulations_round_2/ if you want to chain from a
+# previously-completed epoch_8 checkpoint.
+cattle_baseline_search_dirs: []
 # Intentionally empty: every cattle+selection run must start by re-running the
 # farm_selection_from_ep8.slim job (with num_muts_selected > 0) from the
 # epoch_8 checkpoint (found via cattle_baseline_search_dirs above). Listing
 # pre-computed .full.ts files here would short-circuit that and reuse them.
 stage1_search_dirs: []
-stage2_search_dirs:
-  - /Users/noah/tmp/selsims/selection_bottlenecked/outdir
+stage2_search_dirs: []
 
 # ---- Stage 3/4 specifics ----
 ld_ctrl: 0.75
+dapg_window: 250000
 fastenloc_total_snps: auto    # "auto" = intersection of gwas+gtex annotation VCF SNP IDs; or set an int
 already_includes_neutral: True
 
 # ---- Workdir / publish ----
-workdir: /n/scratch/users/n/njc12/snakemake/cattle_sel_bot
-publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/cattle_sel_bot
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2/cattle_sel_bot
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2/cattle_sel_bot

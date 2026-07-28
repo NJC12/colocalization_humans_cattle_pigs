@@ -1,0 +1,57 @@
+# Human simulation, 2 Mb region. Per-replicate config: submit 8x, overriding
+# stage1_seed, stage2_seed, workdir, publishdir on the command line, e.g.
+#   --config stage1_seed=61 stage2_seed=61 \
+#            workdir=/n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/human_E1 \
+#            publishdir=/n/data2/.../simulations_round_2_2Mb/human_E1
+# Each replicate is a fresh, independent human run (human stage-1 has no burn-in
+# and is cheap at 2 Mb). (H{N} -> seed 6{N}: H1=61 ... H8=68.)
+
+pipeline: human
+species: human
+basename: human
+species_prefix: h
+
+# ---- Demography parameters ----
+Q_scaling: 10
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+recombination_rate: 1.282e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False   # category A; B overrides this to True via --config
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 61
+stage2_seed: 61
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_2_2Mb/human
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_2_2Mb/human

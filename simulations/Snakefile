@@ -26,6 +26,13 @@ REQUIRED_KEYS = [
     "pipeline", "species", "basename",
     "Q_scaling", "L", "min_maf", "gwas_scaling", "gtex_scaling", "gtex_size", "gwas_size",
     "stage1_seed", "workdir",
+    # No setdefault for recombination_rate on purpose, same reasoning as Q_scaling:
+    # it used to be an invisible literal that differed between the cattle msprime
+    # stage (1.3e-8), the cattle SLiM stages (9.26e-9) and the human arm
+    # (1.282e-8, inherited from stdpopsim). A silent default would let that drift
+    # back. Round-2 configs predate the key -- add the value that run actually
+    # used to reproduce it, or 1.3e-8 for round 3.
+    "recombination_rate",
 ]
 for k in REQUIRED_KEYS:
     if k not in config:
@@ -52,6 +59,29 @@ config.setdefault("neutral_trait_vars", False)
 config.setdefault("ld_ctrl", 0.75)
 config.setdefault("dapg_window", 1_000_000)
 config.setdefault("fastenloc_total_snps", "auto")
+# "coloc_default" -> fastEnloc's --coloc_default_prior (p1=p2=1e-4, p12=1e-5),
+# which skips the EM enrichment estimation and therefore writes 3 rather than 5
+# .enloc.*.out files (see helpers/paths.py:stage4_output_kinds). "estimated"
+# restores the data-driven enrichment, but note that its prior depends on
+# -total_variants, which differs ~39x between the two arms under "auto".
+config.setdefault("fastenloc_prior", "coloc_default")
+if config["fastenloc_prior"] not in {"coloc_default", "estimated"}:
+    raise ValueError(
+        f"fastenloc_prior must be 'coloc_default' or 'estimated', "
+        f"got {config['fastenloc_prior']!r}"
+    )
+
+# Split-Q cattle deep history. Both keys or neither: handoff_ticks alone would
+# leave the deep segment's mutation rate undefined.
+if (config.get("handoff_ticks") is None) != (config.get("deep_Q_scaling") is None):
+    raise ValueError(
+        "handoff_ticks and deep_Q_scaling must be set together (or both omitted "
+        "for a single-Q stage 1)"
+    )
+# Optional tag (e.g. "r2_0_25") used by paths.py to namespace parallel
+# stage-3/4 result sets so multiple ld_ctrl values can coexist in one workdir.
+# Empty string preserves the original on-disk layout (existing r2=0.75 outputs).
+config.setdefault("output_tag", "")
 
 # O2-specific binary defaults. Override in YAML for other hosts.
 config.setdefault("python_binary",   "/home/njc12/miniconda3/envs/coloc_sims/bin/python")
@@ -105,7 +135,6 @@ def _required_stage2_files(cfg):
         paths.stage2_marker(cfg),
         *[paths.stage2_pheno(cfg, c)            for c in paths.stage2_categories(cfg)],
         *[paths.stage2_geno(cfg, c)             for c in paths.stage2_categories(cfg)],
-        *[paths.stage2_pca(cfg, c)              for c in paths.stage2_categories(cfg)],
         *[paths.stage2_vcf(cfg, c)              for c in paths.stage2_categories(cfg)],
         *[paths.stage2_pheno_for_plink(cfg, c)  for c in paths.stage2_categories(cfg)],
     ] if os.path.basename(f) != ".stage2.done"]

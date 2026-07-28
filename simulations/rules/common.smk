@@ -24,7 +24,6 @@ def _stage2_outputs(cfg):
         out += [
             paths.stage2_pheno(cfg, cat),
             paths.stage2_geno(cfg, cat),
-            paths.stage2_pca(cfg, cat),
             paths.stage2_vcf(cfg, cat),
             paths.stage2_pheno_for_plink(cfg, cat),
         ]
@@ -63,6 +62,17 @@ rule stage2_split_pheno:
         # would reintroduce the un-corrected effect sizes, so a config missing
         # the key must fail loudly.
         Q_scaling          = config["Q_scaling"],
+        # Cattle split-Q deep history: when stage 1 ran the burn-in and epochs
+        # 2-7 at Q=1 and only epochs 8-12 at Q_scaling, the tree sequence has a
+        # piecewise time scale and both the neutral overlay and the time column
+        # have to be applied in two segments. Omit both keys for a single-Q
+        # stage 1 (the Q=0.01 hedge, and the human arm) and stage 2 behaves as
+        # before.
+        handoff_flag       = (
+            f"--handoff_ticks {config['handoff_ticks']} "
+            f"--deep_Q_scaling {config['deep_Q_scaling']}"
+            if config.get("handoff_ticks") is not None else ""
+        ),
         min_maf            = config["min_maf"],
         L                  = config["L"],
         gtex_size          = config["gtex_size"],
@@ -92,13 +102,20 @@ rule stage2_split_pheno:
         script             = os.path.join(SIM_REPO_DIR, "create_gwas_files_and_phenotypes.py"),
     log: os.path.join(paths.workdir(config), "logs", "stage2_split_pheno.log")
     resources:
-        # Human runs at L=10 Mb write ~10x larger SBAMS/VCFs (~1.2M variants
-        # vs ~125k at L=1 Mb); 8h on short was tight and 64 GB borderline.
-        # Use priority + 24h + 128 GB to give headroom for the human pipeline;
-        # cattle (10 Mb, ~30k variants) easily fits but uses the same config.
-        slurm_partition = "priority",
-        runtime = 24 * 60,
-        mem_mb  = 128000,
+        # Sized from 6 measured round-3 runs (A1/E1 x x35/x10/x20 at L=2 Mb):
+        # max elapsed 2:17, max RSS 369 MB. The previous priority/24h/128 GB was
+        # carried over from L=10 Mb, where SBAMS/VCFs are ~10x larger.
+        #
+        # The 24h request is why controller_2Mb*.sbatch had to carry
+        # `--set-resources stage2_split_pheno:slurm_partition=medium`: 24h does
+        # not fit `short`'s 12h ceiling. At 1h it does, so the rule declares
+        # `short` directly and the overrides are gone.
+        #
+        # If L=10 Mb is ever revived, raise these again -- they are calibrated
+        # for 2 Mb only.
+        slurm_partition = "short",
+        runtime = 60,
+        mem_mb  = 8000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
@@ -111,6 +128,7 @@ rule stage2_split_pheno:
             --gwas_scaling {params.gwas_scaling} \
             --gtex_scaling {params.gtex_scaling} \
             --Q_scaling {params.Q_scaling} \
+            {params.handoff_flag} \
             --min_maf {params.min_maf} \
             --length {params.L} \
             --r2_value 0.2 \
@@ -144,9 +162,10 @@ rule stage3_index_geno:
         htslib_lib = config.get("htslib_lib", ""),
     log: os.path.join(paths.workdir(config), "logs", "stage3_index_{cat}.log")
     resources:
+        # Measured over 18 round-3 jobs: max 1:47, max RSS 110 MB.
         slurm_partition = "short",
-        runtime = 4 * 60,
-        mem_mb  = 32000,
+        runtime = 30,
+        mem_mb  = 4000,
         cpus_per_task = 8,
     conda: "../envs/coloc_sims.yaml"
     shell:
@@ -198,30 +217,33 @@ checkpoint stage3_manifest:
 
 
 def _dapg_mem_mb_base(wc):
-    # Per-category base memory. `seff` on five completed hgwas DAP-G jobs
-    # (medium / 16 CPU / L=1Mb±1Mb window) showed MaxRSS 16-40 GB, so 32 GB
-    # is the safe baseline for hgwas at the new ±0.25 Mb / ~57 k SNPs window
-    # (roughly half the SNP count -> RSS ~8-25 GB). gtex categories use less.
-    # Human values serve as an upper bound for cattle; cattle's smaller
-    # post-MAF SNP counts (e.g. ~1.5 k at G's ±0.25 Mb window) need less.
+    # Per-category base memory.
+    #
+    # MEASURED over 1500 round-3 DAP-G jobs (A1 human + E1 cattle-baseline, at
+    # x35/x10/x20, L=2 Mb, PCA removed, ±0.25 Mb window). Peak RSS by category:
+    #     hgwas 2580 MB   hgtex 249 MB   hgtex_smaller 112 MB
+    #     cgwas  633 MB   cgtex 113 MB   cgtex_smaller 111 MB
+    # The old numbers came from L=1 Mb ±1 Mb-window runs that still carried PCA
+    # covariates, where hgwas RSS was 16-40 GB. Both changes cut the SBAMS size.
     cat = wc.cat
     if config["species"] == "human":
         if cat.endswith("gwas"):
-            return 32000
+            return 8000        # 3.1x measured peak; retries give 16/24 GB
         if cat == "hgtex":
-            return 16000
-        return 8000  # hgtex_smaller, hgtex_smallest
-    # cattle cgwas memory. F1 (cattle_sel_bottlenecked) seff showed ~947 MB
-    # peak, but G1-G4 (cattle_sel_not_bottlenecked, continue_bottlenecking=0)
-    # OOM-killed 100% of cgwas DAP-G jobs at 4 GB and 12 GB. F's bottleneck
-    # made it a category-incompatible baseline for G: higher Ne -> more
-    # common variants in the 8000-sample cgwas -> much larger sparse-LD
-    # matrix, with observed peak MaxRSS up to ~30 GB. 32 GB base matches
-    # the human hgwas tier (100% success rate empirically), scaling
-    # 32 -> 64 -> 96 GB on retries.
+            return 4000        # 16x measured peak
+        return 4000            # hgtex_smaller, hgtex_smallest: 36x measured peak
+    # cattle cgwas memory. DELIBERATELY NOT REDUCED, despite E1 measuring only
+    # 633 MB. The 1500-job round-3 sample covers category E only; F and G have
+    # not been rerun. Round-2 history: F1 (cattle_sel_bottlenecked) peaked at
+    # ~947 MB, but G1-G4 (cattle_sel_not_bottlenecked, continue_bottlenecking=0)
+    # OOM-killed 100% of cgwas DAP-G jobs at BOTH 4 GB and 12 GB, peaking near
+    # 30 GB -- G's higher Ne means more common variants in the 8000-sample
+    # cgwas and a much larger sparse-LD matrix. E is not a safe proxy for G.
+    # Revisit once F/G have run under round-3 code; until then 32 GB stands,
+    # scaling 32 -> 64 -> 96 GB on retries.
     if cat.endswith("gwas"):
         return 32000
-    return 8000
+    return 4000                # cgtex, cgtex_smaller: 35x measured peak
 
 
 def _dapg_mem_mb(wc, attempt):
@@ -239,7 +261,7 @@ rule stage3_dapg_locus:
         pheno = lambda wc: paths.stage2_pheno(config, wc.cat),
         geno  = lambda wc: paths.stage3_geno_gz(config, wc.cat),
         tbi   = lambda wc: paths.stage3_geno_tbi(config, wc.cat),
-        pca   = lambda wc: ancient(paths.stage2_pca(config, wc.cat)),
+        # No `pca` input: DAP-G runs without covariates. See run_plink_glm.sh.
     params:
         ld_ctrl      = config.get("ld_ctrl", 0.75),
         window       = config.get("dapg_window", 1_000_000),
@@ -255,8 +277,18 @@ rule stage3_dapg_locus:
         # idle cores or blocking on 16-CPU slot availability. Memory is
         # attempt-scaled (32 -> 64 -> 96 GB for hgwas) to handle the upper
         # tail without over-provisioning the median.
+        # Runtime measured over 1500 round-3 jobs (A1/E1 x x35/x10/x20, L=2 Mb).
+        # The tail is entirely hgwas -- median 19:19, max 23:50 -- because human
+        # carries ~36k variants per region against cattle's ~1.4k. Every other
+        # category maxes at 6:29:
+        #     hgwas  med 19:19  max 23:50      cgwas         med 2:20  max 4:44
+        #     hgtex  med  1:22  max  3:02      cgtex         med 1:37  max 5:37
+        #     hgtex_smaller med 1:47 max 5:19  cgtex_smaller med 1:53  max 6:29
+        # 60 min for *gwas is 2.5x the observed hgwas max; 30 min for *gtex is
+        # 4.6x the observed gtex max. A walltime kill is retried by
+        # --restart-times, so the failure mode here is recoverable.
         slurm_partition = "short",
-        runtime         = lambda wc: 6 * 60   if wc.cat.endswith("gwas") else 4 * 60,
+        runtime         = lambda wc: 60 if wc.cat.endswith("gwas") else 30,
         mem_mb          = _dapg_mem_mb,
         cpus_per_task   = 4,
     shell:
@@ -264,7 +296,6 @@ rule stage3_dapg_locus:
         bash "{params.script}" \
             --pheno "{input.pheno}" \
             --geno  "{input.geno}" \
-            --pca   "{input.pca}" \
             --trait "{wildcards.trait}" \
             --window {params.window} \
             --ld-ctrl {params.ld_ctrl} \
@@ -337,19 +368,29 @@ rule stage4_fastenloc:
         outputs_subdir = paths.stage3_outputs_subdir_name(config),
         # "auto" means: count IDs that appear in both annotation VCFs (the
         # intersection of GWAS and GTEx tested SNPs). Override by setting
-        # fastenloc_total_snps to an integer in the config YAML.
+        # fastenloc_total_snps to an integer in the config YAML. Read only when
+        # fastenloc_prior == "estimated"; the default prior ignores it.
         total_snps = config.get("fastenloc_total_snps", "auto"),
+        prior      = config.get("fastenloc_prior", "coloc_default"),
         dap2enloc  = config["dap2enloc_binary"],
         fastenloc  = config["fastenloc_binary"],
         fastenloc_libpath = config.get("fastenloc_libpath", ""),
         script     = os.path.join(SIM_REPO_DIR, "scripts", "run_fastenloc.sh"),
     log: os.path.join(paths.workdir(config), "logs", "stage4_fastenloc_{gtex_cat}.log")
     resources:
-        # At L=10 Mb the annotation-VCF intersection scales with SNP count
-        # (~1.2 M for human, ~30 k for cattle). 32 GB / 4 h is safe on short.
+        # The 32 GB request existed for the "auto" -total_variants computation,
+        # which sorts and intersects both gunzipped annotation VCFs (~1.2 M IDs
+        # for human at L=10 Mb). The default prior skips that entirely, so the
+        # job is now just dap2enloc plus fastEnloc itself.
+        # Measured over 12 round-3 jobs under the default prior: max 1:50
+        # elapsed, 115 MB RSS. The "estimated" branch still gets 32 GB because
+        # its -total_variants intersection has not been measured under round-3
+        # code, and it is the reason the 32 GB tier existed at all.
         slurm_partition = "short",
-        runtime = 4 * 60,
-        mem_mb  = 32000,
+        runtime = (4 * 60 if config.get("fastenloc_prior", "coloc_default") == "estimated"
+                   else 30),
+        mem_mb  = (32000 if config.get("fastenloc_prior", "coloc_default") == "estimated"
+                   else 4000),
         cpus_per_task = 4,
     shell:
         r"""
@@ -362,6 +403,7 @@ rule stage4_fastenloc:
             --annot-gwas "{input.annot_gwas}" \
             --annot-gtex "{input.annot_gtex}" \
             --out-prefix "{params.prefix}" \
+            --prior "{params.prior}" \
             --total-snps {params.total_snps} \
             --dap2enloc "{params.dap2enloc}" \
             --fastenloc "{params.fastenloc}" \
@@ -388,11 +430,13 @@ rule stage5_plink_glm:
         script = os.path.join(SIM_REPO_DIR, "scripts", "run_plink_glm.sh"),
     log: os.path.join(paths.workdir(config), "logs", "stage5_plink_{cat}.log")
     resources:
-        # plink2 GLM at L=10 Mb / 1.2 M SNPs / 8k samples is still fast
-        # but margin was tight on 4 h. Bump to 32 GB / 8 h.
+        # Measured over 18 round-3 jobs at L=2 Mb: max 0:46 elapsed, 110 MB RSS.
+        # The 8h/32 GB figures were for L=10 Mb / 1.2 M SNPs, and also predate
+        # the PCA removal that dropped the --indep-pairwise and --pca steps this
+        # rule used to run before the GLM.
         slurm_partition = "short",
-        runtime = 8 * 60,
-        mem_mb  = 32000,
+        runtime = 30,
+        mem_mb  = 4000,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:

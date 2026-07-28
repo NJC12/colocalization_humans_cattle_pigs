@@ -18,6 +18,51 @@ def _human_stage1_n_samples(cfg):
     return gwas_size + largest_gtex
 
 
+# The three functions below key on BOTH sample count and L. They used to key on
+# sample count alone, which meant every A/B run inherited figures calibrated at
+# L=10 Mb: 7 days and 100 GB. The measured round-3 A1 run at L=2 Mb took 1:05
+# and 232 MB -- 0.01% of the runtime request and 0.2% of the memory. Since the
+# SLiM working set and runtime both scale with sequence length, small-L configs
+# get their own tier rather than a blanket cut, so the 10 Mb path is unchanged
+# if it is ever revived.
+_SMALL_L = 4_000_000
+
+
+def _human_stage1_small(cfg):
+    return _human_stage1_n_samples(cfg) <= 50000 and cfg["L"] <= _SMALL_L
+
+
+def _human_stage1_mem_mb(cfg):
+    """Scale memory request to the actual SLiM working-set size.
+
+    Round-3 A1 measured 232 MB at L=2 Mb / n=9k; 8 GB is 35x that. A/B at
+    L=10 Mb / n=9k need ~100 GB (was 32 GB at L=1 Mb -- the working set scales
+    with L). C/D at L=2.5 Mb / n=100k keep 200 GB.
+    """
+    if _human_stage1_small(cfg):
+        return 8000
+    return 200000 if _human_stage1_n_samples(cfg) > 50000 else 100000
+
+
+def _human_stage1_partition(cfg):
+    """Small-L A/B fits `short` comfortably at 2h, which also removes the need
+    for controller_2Mb*.sbatch to override this rule's partition. A/B at
+    L=10 Mb overshoot short's 12h cap, so route to priority (30-day). C/D keep
+    the long partition's 30-day allotment."""
+    if _human_stage1_small(cfg):
+        return "short"
+    return "long" if _human_stage1_n_samples(cfg) > 50000 else "priority"
+
+
+def _human_stage1_runtime(cfg):
+    """Small-L A/B: 2h, against a measured 1:05 at L=2 Mb. A/B at L=10 Mb:
+    7 days as a safe ceiling on priority. C/D keep the prior 30-day
+    reservation on long."""
+    if _human_stage1_small(cfg):
+        return 2 * 60
+    return 30 * 24 * 60 if _human_stage1_n_samples(cfg) > 50000 else 7 * 24 * 60
+
+
 rule stage1_human:
     output:
         ts = paths.stage1_dir(config) + "/" + paths.stage1_human_ts(config),
@@ -33,18 +78,22 @@ rule stage1_human:
         gtex_h2    = config.get("gtex_h2", 0.4),
         L          = config["L"],
         Q          = config["Q_scaling"],
+        recomb     = config["recombination_rate"],
         n_samples  = _human_stage1_n_samples(config),
         script_dir = SIM_REPO_DIR,
         script     = "human_simulation_o2.py",
-        # The script writes to a hardcoded scratch dir.
-        produced_ts = f"/n/scratch/users/n/njc12/sims/tmp/hts_{config['stage1_seed']}.ts",
+        python     = config["python_binary"],
+        slim       = config["slim_binary"],
+        # Per-run scratch dir keeps round-2 outputs isolated from old runs.
+        tmp_dir    = os.path.join(paths.workdir(config), "human_tmp"),
+        produced_ts = os.path.join(paths.workdir(config), "human_tmp", f"hts_{config['stage1_seed']}.ts"),
     log:
         os.path.join(paths.workdir(config), "logs", "stage1_human.log"),
     resources:
-        slurm_partition = "priority",
-        runtime = 30 * 24 * 60,   # 30 days, in minutes
-        mem_mb  = 200000,
-        cpus_per_task = 4,
+        slurm_partition = _human_stage1_partition(config),
+        runtime         = _human_stage1_runtime(config),
+        mem_mb          = _human_stage1_mem_mb(config),
+        cpus_per_task   = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:
         r"""
@@ -55,13 +104,17 @@ rule stage1_human:
             exit 0
         fi
         cd "{params.script_dir}"
-        python {params.script} \
+        export PATH="$(dirname {params.slim}):$PATH"
+        mkdir -p "{params.tmp_dir}"
+        "{params.python}" {params.script} \
             --seed {params.seed} \
             --gwas_h2 {params.gwas_h2} \
             --gtex_h2 {params.gtex_h2} \
             --length {params.L} \
             --Q {params.Q} \
+            --recomb_rate {params.recomb} \
             --n_samples {params.n_samples} \
+            --tmp_dir "{params.tmp_dir}" \
             > {log} 2>&1
         cp -u "{params.produced_ts}" "{output.ts}"
         """

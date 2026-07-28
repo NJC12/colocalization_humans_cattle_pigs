@@ -1,0 +1,116 @@
+// Resumable continuation of farm_burn_in_e2.slim.
+//
+// farm_burn_in_e2.slim always restarts from the msprime population at tick 1 and
+// stops at a hard-coded tick 25000 (250 real generations at Q_scaling=0.01,
+// against the 30000 real generations ep_lengths[1] implies). This script reads
+// one of its `.cycle_<N>.ts` checkpoints and carries on, so the burn-in can be
+// extended without redoing work and a long run can be chained across SLURM
+// walltime limits -- feed each job's final checkpoint to the next one.
+//
+// Required -d flags:
+//   Q_scaling, length, recomb_rate, end_tick, file_in, dir_out, file_out
+//
+// `end_tick` is ABSOLUTE, not a duration: pass 130000 to run until tick 130000
+// regardless of where file_in left off. Checkpoints keep farm_burn_in_e2.slim's
+// every-10/Q cadence and `.cycle_<N>.ts` naming, so helpers/sfs_equilibrium.py
+// and paths.py:stage1_cattle_baseline_burnin both work on the output unchanged.
+//
+// Everything in initialize() below is a deliberate copy of farm_burn_in_e2.slim.
+// Any drift between the two silently changes the equilibrium the burn-in is
+// converging toward, which is the one thing this script exists to reach.
+//
+// Example (continue the 2 Mb burn-in from tick 25000 to tick 130000):
+//   slim -m -t -l -s 20250303 \
+//     -d Q_scaling=0.01 -d length=2000000 -d recomb_rate=1.3e-8 -d end_tick=130000 \
+//     -d file_in=\"<dir>/farm_burn_in.Q_0.01.L_2000000.seed_20250303.cycle_25000.ts\" \
+//     -d dir_out=\"<dir>/\" -d file_out=\"farm_burn_in.Q_0.01.L_2000000.seed_20250303\" \
+//     farm_burn_in_continue.slim
+
+initialize() {
+    initializeSLiMOptions(keepPedigrees=F);
+    initializeTreeSeq();
+    defineConstant("Q", Q_scaling);
+    defineConstant("L", length);
+    defineConstant("output_dir", dir_out);
+    defineConstant("output_file", file_out);
+
+    if (!exists("recomb_rate"))
+        stop("ERROR: -d recomb_rate=<float> is required (config key `recombination_rate`)");
+    if (!exists("end_tick"))
+        stop("ERROR: -d end_tick=<integer> is required (absolute tick to stop at)");
+
+    // Q-scaled per-tick rate; exact at Q == 1, where it reduces to recomb_rate.
+    defineConstant("recombination_rates", (1 - (1 - 2 * recomb_rate)^Q) / 2);
+    defineConstant("recombination_ends", L-1);
+    initializeRecombinationRate(recombination_rates, recombination_ends);
+    defineConstant("metadata", Dictionary("Q", Q));
+
+    // Checkpoint cadence. Defaults to farm_burn_in_e2.slim's 10/Q ticks (1000 at
+    // Q=0.01), overridable with -d checkpoint_every=<int> because the default is
+    // wrong for long runs: every checkpoint carries the full individual and node
+    // tables, which at Q=0.01 means 1.7M individuals / 3.4M nodes regardless of
+    // sequence length, so they run to hundreds of MB each. A 130,000-tick run at
+    // the default cadence writes 130 of them -- tens of GB of scratch for a
+    // convergence diagnostic that is well served by ~25 time points.
+    if (exists("checkpoint_every"))
+        defineConstant("ckpt_every", asInteger(checkpoint_every));
+    else
+        defineConstant("ckpt_every", asInteger(10/Q));
+    if (ckpt_every < 1)
+        stop("ERROR: checkpoint_every must be >= 1, got " + ckpt_every);
+
+    initializeMutationType("m1", 0.5, "e", Q * -4e-4); // Negative because deleterious
+    initializeMutationType("m2", 0.5, "g", Q * -0.03, 0.206);
+    initializeMutationType("m3", 0.5, "e", Q * 0.005);
+    initializeGenomicElementType("g1", c(m1, m2, m3), c(0.975, 0.024, 0.001));
+    initializeGenomicElement(g1, 0, L-1);
+    initializeMutationRate(Q * 5.6e-9, c(L-1)); // DFE-applied rate = 1.4e-8 * 0.4 (unscaled); neutral 8.4e-9 added downstream
+
+    defineGlobal("stop_tick", -1);
+}
+
+
+// readFromPopulationFile sets sim.cycle to the checkpoint's tick, so execution
+// resumes there rather than at tick 2 -- the same behaviour farm_selection_from_ep8.slim
+// relies on. The `2:` block below is therefore a lower bound, not a schedule.
+1 late() {
+    sim.readFromPopulationFile(file_in);
+    print("Resumed from " + file_in);
+    print("| Tick at resume: " + sim.cycle);
+    for (subpop in sim.subpopulations) {
+        print("| subpop " + subpop.id + ": " + subpop.individualCount + " individuals");
+    }
+
+    if (end_tick <= sim.cycle)
+        stop("ERROR: end_tick (" + end_tick + ") is not beyond the checkpoint tick (" +
+             sim.cycle + "); nothing to do");
+
+    defineGlobal("stop_tick", asInteger(end_tick));
+    print("| Continuing to tick " + stop_tick + " (" +
+          asInteger((stop_tick - sim.cycle) * Q) + " more real generations)");
+}
+
+
+2: late() {
+    if (sim.cycle % 100 == 0) {
+        print("| Tick " + sim.cycle);
+    }
+
+    // Write on the regular cadence, and unconditionally at stop_tick so the
+    // final state is always on disk even when stop_tick is not a multiple of
+    // checkpoint_every. The `|` guard keeps that from double-writing.
+    if (sim.cycle % ckpt_every == 0 | sim.cycle == stop_tick) {
+        sim.treeSeqOutput(output_dir + output_file + ".cycle_" + sim.cycle + ".ts",
+                          metadata=metadata);
+    }
+
+    if (sim.cycle == stop_tick) {
+        print("-----Reached tick " + stop_tick + "; stopping-----");
+        sim.simulationFinished();
+    }
+}
+
+
+10000000 late() {
+    print("This is just a placeholder tick (slim won't run past the highest named tick). If you see this message, stop_tick was never reached.");
+}

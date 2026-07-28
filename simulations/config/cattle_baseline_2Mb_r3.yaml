@@ -1,0 +1,73 @@
+# Cattle baseline, 2 Mb region. Shared run that produces the epoch_8 checkpoint
+# the 8 from-midpoint replicates continue from. The 2 Mb burn-in is EXTRACTED
+# from the 10 Mb burn-in (helpers/extract_subregion.py) and placed in this
+# workdir's stage1/ as farm_burn_in.Q_0.01.L_2000000.seed_20250303.cycle_25000.ts,
+# so only the selection step runs. (In practice the selection is launched as a
+# standalone sbatch -- this config documents the parameters and the stage1 dir
+# that cattle_baseline_from_midpoint_2Mb points at.)
+
+pipeline: cattle_baseline
+species: cattle
+basename: cattle_baseline
+species_prefix: c
+
+# ---- Selection / demography parameters ----
+Q_scaling: 1
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+
+# ---- Sample sizes ----
+gwas_scaling: 35
+gtex_scaling: 35
+min_maf: 0.01
+gwas_size: 8000
+gtex_size: 1000
+
+# ---- Per-stage seeds ----
+stage1_seed: 20250303
+stage2_seed: 20250303
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+cattle_baseline_search_dirs: []
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Burn-in cycle to use as input to farm_selection.slim ----
+# 30,000 ticks = 30,000 real generations at Q=1, which is what ep_lengths[1]
+# always implied. Round 2 stopped at tick 25000, i.e. 250 real generations.
+burn_in_cycle: 30000
+# ~30 checkpoints across the burn-in, which is what sfs_equilibrium.py needs.
+# The old 10/Q cadence is 10 ticks at Q=1, i.e. 3000 files.
+burn_in_checkpoint_every: 1000
+
+# ---- SLiM binary (SLiM 5.2 wrapper; reads pyslim file_version 0.9 .trees) ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (distinct 2 Mb root; never touches the 10 Mb run) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb/cattle_baseline
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+
+# Deep history only. Hand its .ep7.ts to helpers/rescale_checkpoint.py
+# (--from-Q 1 --to-Q 0.01) before the from-midpoint replicates consume it.
