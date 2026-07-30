@@ -252,10 +252,27 @@ checkpoint stage3_manifest:
                 f.write(t + "\n")
 
 
-def _fm_filtered(cfg):
-    """True when the SBAMS handed to DAP-G is MAF-filtered (fm_min_maf > 0)."""
+# The floor at or above which fine-mapping actually THINS the candidate set
+# enough to justify the reduced resource tiers below. The measured 2847 -> 327
+# collapse those tiers were calibrated against happens at 0.01; a floor of 0.001
+# removes almost nothing, because at that level the filter is a minimum-count
+# filter and the counts are already met -- MAC >= 16 in the n=8000 GWAS panel,
+# MAC >= 2 at GTEx n=1000, MAC >= 1 (i.e. nothing at all) at GTEx n=500.
+_FM_THINNING_FLOOR = 0.005
+
+
+def _fm_thins_candidates(cfg):
+    """True when fm_min_maf is high enough to materially shrink the SBAMS.
+
+    Deliberately NOT "is a filter applied at all". A 0.001 floor IS a filter --
+    the awk block runs and the .fmmaf sidecar records it -- but it is not one
+    that makes DAP-G's job smaller, and answering the wrong question here hands
+    the human arm a 20 min / 4 GB allocation for work measured at 23:50 and
+    2580 MB. Only the resource helpers below call this; nothing about the
+    pipeline's OUTPUT depends on it.
+    """
     try:
-        return float(cfg.get("fm_min_maf", 0) or 0) > 0
+        return float(cfg.get("fm_min_maf", 0) or 0) >= _FM_THINNING_FLOOR
     except (TypeError, ValueError):
         return False
 
@@ -267,14 +284,14 @@ def _fm_filtered(cfg):
 #     human   2847 candidates ->  327 at MAF >= 0.01   (-88%)
 #     cattle   366 candidates ->  330 at MAF >= 0.01   (-10%)
 def _dapg_runtime(wc, attempt):
-    if _fm_filtered(config) and config["species"] == "human":
+    if _fm_thins_candidates(config) and config["species"] == "human":
         # 8.7x fewer candidates. DAP-G's per-locus cost is at least linear in
         # the candidate count (model search) and quadratic in the LD block it
         # has to build, so the true speedup is >= 8.7x. Against a measured
         # hgwas median 19:19 / max 23:50 unfiltered, 20 min is ~7x the
         # projected filtered max; hgtex (max 5:19) gets 15.
         base = 20 if wc.cat.endswith("gwas") else 15
-    elif _fm_filtered(config):
+    elif _fm_thins_candidates(config):
         # Cattle: only ~10% of candidates go, so the cut is modest. Trimmed
         # against measured cgwas max 4:44 / cgtex max 6:29 rather than the
         # human-driven 60/30 defaults.
@@ -297,7 +314,7 @@ def _dapg_mem_mb_base(wc):
     # covariates, where hgwas RSS was 16-40 GB. Both changes cut the SBAMS size.
     cat = wc.cat
     if config["species"] == "human":
-        if _fm_filtered(config):
+        if _fm_thins_candidates(config):
             # 2847 -> 327 candidates. The genotype matrix shrinks 8.7x and the
             # LD matrix ~76x, and the LD matrix is what made hgwas the heavy
             # category (2580 MB peak). Projected filtered peak is a few hundred

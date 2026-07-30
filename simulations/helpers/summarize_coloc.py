@@ -8,30 +8,48 @@ multiplier cells are picked up automatically.
 
 Definitions
 -----------
-RCP / LCP     SIGNAL-level RCP / LCP from `*.enloc.sig.out`.  A sig.out signal
-              is named `<gene>:<cluster>(@)` and its cluster id is the DAP-G
-              cluster id (verified: Num_SNP and CPIP_qtl match DAP-G's
-              member_snp and cluster_pip exactly), so each colocalizing signal
-              can be traced back to a specific credible set.
-correct match the signal cluster that CONTAINS the gene's defined causal
-              variant, for a gene that has a matching GWAS trait.  Flank genes
-              have no matching GWAS trait and therefore no correct match, so
-              every call they produce is wrong by construction.
-true positive a gene with at least one signal cluster over the cutoff where one
-              of those clusters is the correct match.  Denominator is the
-              number of defined GWAS traits.
-false positive a gene with at least one signal cluster over the cutoff, none of
-              which is the correct match.  This includes CAUSATIVE genes that
-              colocalize through the wrong credible set -- right gene, wrong
-              signal -- not just flank genes.  Reported as a false DISCOVERY
-              rate, fp / (tp + fp), so the denominator is the number of
-              positive calls.
-              Genes with no cluster over the cutoff are neither.
+COLOCALIZATION is scored between PAIRS OF TRAITS, and never by which credible set
+              carried the signal.  A GWAS trait and a GTEx trait share a name
+              (`tr<position>`) exactly when they share a causal variant, so
+              `tr887241` <-> `tr887241` is the one correct pairing for that GWAS
+              trait.  Colocalizing through a tagging variant instead of the causal
+              one is still a genuine detection -- and is the INTENDED route
+              whenever `causal_min_maf` < the fine-mapping floor, which drops the
+              causal variant from the tested set on purpose.
+
+              The pairing comes from `*.enloc.sig.out`, whose signals are named
+              `<eqtl_gene>:<eqtl_cluster>(@)<gwas_trait>:<gwas_cluster>`
+              (controller.cc:1436).  Cluster ids on both sides are discarded and a
+              GTEx trait's several clusters collapse to one entry by max, so every
+              count below is over DISTINCT TRAITS.
+
+              Per GWAS trait W, at one metric and cutoff:
+                self_above   some signal with eqtl_gene == W over the cutoff
+                other_traits distinct eqtl_gene != W over the cutoff
+enloc_pow_*   COUNT of GWAS traits with self_above, however many other_traits they
+              also hit.  Denominator: n_gwas_traits (50 per replicate).
+enloc_fp_*    COUNT of GWAS traits with NOT self_above and other_traits non-empty
+              -- it colocalized, just with the wrong trait.  Denominator for a
+              false-discovery rate: enloc_pow_* + enloc_fp_*.  The two outcomes are
+              mutually exclusive, and a trait clearing nothing is neither.
+enloc_hit_med_gtex_sigs_*
+              over the enloc_pow_* traits only, the MEDIAN number of distinct GTEx
+              traits colocalized with, counting the correct one -- so 1 is the floor
+              and a median of 1 means the typical true positive is specific.  NA
+              when there are no power traits.
 auc_enloc_N   single-operating-point AUC at RCP > 0.N: (sensitivity +
-              specificity) / 2, with sensitivity = TP / defined GWAS traits and
-              specificity = 1 - FP / all genes evaluated.  A per-threshold
-              summary that pairs with the tp/fp columns, NOT a threshold-free
-              ROC-AUC.  0.5 is chance.
+              specificity) / 2, with sensitivity = pow / n_gwas_traits and
+              specificity = 1 - fp / n_gwas_traits (both outcomes are indexed on
+              the GWAS trait, so n_gwas_traits bounds either).  A per-threshold
+              summary that pairs with the pow/fp columns, NOT a threshold-free
+              ROC-AUC, so it is sensitive to where the cutoff falls for a given
+              condition.  0.5 is chance.
+
+              _rcp* columns test RCP only and _lcp* columns LCP only.  LCP >= RCP
+              always, so each lcp count is >= its rcp counterpart.
+
+All enloc_pow_*, enloc_fp_*, gwas_cpip_* and gtex_cpip_* columns are RAW COUNTS,
+not percentages; their denominators are the n_* columns described below.
 CPIP          PIP of the DAP-G signal cluster CONTAINING the true causal
               variant, over the causative loci.  A locus fine-mapped
               confidently to the wrong cluster counts as a failure.
@@ -58,10 +76,9 @@ n_causal_tested of the `n_gwas_traits` defined GWAS loci, how many had their
               *_cs_causative columns.  The colocalization columns use ALL loci: a
               locus whose causal variant went untested can still colocalize
               correctly, because the GWAS and GTEx traits there share that one
-              variant and both credible sets are built from tags of it.  See
-              classify().  What such a locus cannot tell you is whether the
-              credible set contains the causal variant -- a fine-mapping question,
-              not a colocalization one.
+              variant and both credible sets are built from tags of it.  What such
+              a locus cannot tell you is whether the credible set contains the
+              causal variant -- a fine-mapping question, not a colocalization one.
 params_source `params` when the parameters were read from the run's params file,
               `inferred` when they were reverse-engineered from paths, row counts
               and Snakemake metadata (every run predating the params file).
@@ -76,17 +93,72 @@ from statistics import median
 
 try:
     import yaml
-except ImportError:   # no PyYAML: params reading degrades to the legacy inference
+except ImportError:
     yaml = None
+
+
+def _parse_params(text):
+    """Minimal reader for the params files, for environments without PyYAML.
+
+    Silently falling back to the legacy inference would be worse than useless
+    here: it would assign the run a fine-mapping floor taken from the stage-2
+    directory name, which for a lowered causal floor is the WRONG number, and the
+    table would look fine while being wrong. The files are a flat mapping of
+    scalars plus the `_meta` / `_derived` blocks, so parsing the part this script
+    needs takes no real YAML support.
+
+    Returns top-level scalars plus `_derived`'s scalar children.
+    """
+    def scalar(v):
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            return v[1:-1]
+        low = v.lower()
+        if low in ("true", "false"):
+            return low == "true"
+        if low in ("null", "~", ""):
+            return None
+        for cast in (int, float):
+            try:
+                return cast(v)
+            except ValueError:
+                pass
+        return v
+
+    out, block = {}, None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indented = raw[0] in " \t"
+        line = raw.strip()
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key, val = key.strip(), val.strip()
+        if not indented:
+            # A key with no value opens a nested block; we only follow _derived.
+            block = key if not val else None
+            if val:
+                out[key] = scalar(val)
+            elif key == "_derived":
+                out["_derived"] = {}
+        elif block == "_derived" and val and not val.endswith(("{", "[")):
+            out["_derived"][key] = scalar(val)
+    return out
 
 DEMOGRAPHY = {"A": "human", "B": "human", "C": "human", "D": "human",
               "E": "cattle", "F": "cattle", "G": "cattle"}
 
 COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
            "causal_min_maf", "n_gwas_traits", "n_causal_tested",
+           "n_gwas_cpip_tested", "n_gtex_cpip_tested",
            "fm_filtered", "fm_r2", "params_source", "gwas_mult", "gtex_mult",
-           "enloc_tp_rcp50", "enloc_fp_rcp50", "enloc_tp_rcp90", "enloc_fp_rcp90",
-           "enloc_tp_lcp50", "enloc_fp_lcp50", "enloc_tp_lcp90", "enloc_fp_lcp90",
+           # Raw COUNTS, not percentages. Denominators: power over
+           # n_gwas_traits; the false-discovery rate over (pow + fp).
+           "enloc_pow_rcp50", "enloc_fp_rcp50", "enloc_pow_rcp90", "enloc_fp_rcp90",
+           "enloc_pow_lcp50", "enloc_fp_lcp50", "enloc_pow_lcp90", "enloc_fp_lcp90",
+           "enloc_hit_med_gtex_sigs_rcp50", "enloc_hit_med_gtex_sigs_rcp90",
+           "enloc_hit_med_gtex_sigs_lcp50", "enloc_hit_med_gtex_sigs_lcp90",
            "auc_enloc_50", "auc_enloc_90",
            "gwas_cpip_50", "gtex_cpip_50", "gwas_cpip_90", "gtex_cpip_90",
            "gwas_mean_cs_all", "gwas_mean_cs_causative",
@@ -117,90 +189,161 @@ def parse_dapg(path):
     return clus, cpip, csize
 
 
-def read_sig_out(path):
-    """Signal-level enloc output -> {gene: {cluster_id: (RCP, LCP)}}.
+# Signals dropped because fastEnloc attributed them to no GWAS locus, plus the
+# merged-locus tally. Reported on stderr by main() rather than silently swallowed:
+# if the sig.out naming ever changes, every colocalization would land here and the
+# table would quietly read as "nothing colocalized anywhere".
+_SIG_STATS = {"rows": 0, "no_gwas": 0, "no_gwas_over_half": 0,
+              "merged": 0, "merged_over_half": 0}
 
-    Signal names look like `tr88703:1(@)` -- gene before ':', DAP-G cluster id
-    after.  Clusters absent from sig.out never cleared any threshold and are
-    simply missing here.
+# Long-format per-GWAS-trait records, enabled by --dump-traits. None means off, and
+# the extra work (a second gwas_partners pass per panel) is skipped entirely. The
+# dump exists so questions the aggregate table cannot answer -- power split by
+# whether the causal variant was testable, sensitivity to the merged-locus policy
+# -- can be answered without another cluster round trip.
+_TRAIT_DUMP = None
+
+
+def read_sig_out(path):
+    """Signal-level enloc output -> [(eqtl_gene, gwas_trait, RCP, LCP)].
+
+    fastEnloc names a signal `<eqtl_gene>:<eqtl_cluster>(@)<gwas_locus>` --
+    controller.cc:1436 builds it as `eqtl_vec[i].id + "(@)" + snp2gwas_locus[snp]`
+    -- e.g. `tr544663:1(@)tr544663:1`.  The suffix names the GWAS locus this eQTL
+    signal colocalized with, which is what makes trait-level scoring possible.
+
+    Cluster ids on both sides are deliberately discarded: colocalization is scored
+    per trait pair, so which credible set carried the signal does not matter.
+
+    Two suffix forms beyond the simple one, both seen in real output:
+
+      EMPTY -- `tr16568:2(@)` with nothing after.  The signal's SNPs fall in no
+        GWAS locus at all, so it cannot be attributed to any GWAS trait and is
+        dropped.  Counted in _SIG_STATS; harmless in practice because these carry
+        RCP at the 1e-4 floor, but a loud problem if one ever clears a cutoff.
+
+      MERGED -- `tr806894:2(@)tr634882:1_tr717151:1`, an underscore-joined list.
+        fastEnloc merges GWAS loci that share SNPs, so one eQTL signal can overlap
+        the signal regions of SEVERAL GWAS traits at once.  Every named trait is
+        emitted as its own row, i.e. the signal is credited to all of them.
+
+        Taking only the first, as an earlier version did, would be arbitrary --
+        the order is SNP order, not evidence order -- and would silently convert a
+        correct pairing into a miss whenever the matching trait happened to be
+        listed second.  Dropping merged rows outright would understate power and
+        false positives together.  Crediting every constituent is the honest
+        reading of "this eQTL signal colocalized with a region containing these
+        GWAS traits", and it is symmetric: a merged locus can just as easily hand
+        a trait a false positive as a true one.  Trait names are `tr<position>`
+        and never contain an underscore, so the split is unambiguous.
     """
-    out = {}
+    rows = []
     with open(path) as fh:
         fh.readline()
         for line in fh:
             f = line.split()
             if len(f) < 7:
                 continue
-            name = f[0].split("(")[0]
-            gene, _, cid = name.partition(":")
-            try:
-                cid = int(cid)
-            except ValueError:
+            eq, _, gw = f[0].partition("(@)")
+            gene = eq.split(":")[0]
+            rcp, lcp = float(f[5]), float(f[6])
+            _SIG_STATS["rows"] += 1
+            if not gw:
+                _SIG_STATS["no_gwas"] += 1
+                if max(rcp, lcp) > 0.5:
+                    _SIG_STATS["no_gwas_over_half"] += 1
                 continue
-            out.setdefault(gene, {})[cid] = (float(f[5]), float(f[6]))
+            loci = [x.split(":")[0] for x in gw.split("_") if x]
+            if len(loci) > 1:
+                _SIG_STATS["merged"] += 1
+                if max(rcp, lcp) > 0.5:
+                    _SIG_STATS["merged_over_half"] += 1
+            for gwas in loci:
+                rows.append((gene, gwas, rcp, lcp, len(loci) > 1))
+    return rows
+
+
+def gwas_partners(sig_rows, drop_merged=False):
+    """-> {gwas_trait: {eqtl_gene: (max RCP, max LCP)}}
+
+    Collapses a GTEx trait's several clusters into one entry by taking the max,
+    which is what makes the downstream counts "distinct traits" rather than
+    "signals".
+
+    `drop_merged` discards every signal whose GWAS attribution spanned merged
+    loci, giving the strict counterpart to the default credit-all policy.  Used to
+    measure how much the reported numbers rest on the ambiguous attributions
+    rather than to produce them -- see read_sig_out.
+    """
+    out = {}
+    for gene, gwas, rcp, lcp, merged in sig_rows:
+        if drop_merged and merged:
+            continue
+        d = out.setdefault(gwas, {})
+        prev = d.get(gene, (0.0, 0.0))
+        d[gene] = (max(prev[0], rcp), max(prev[1], lcp))
     return out
 
 
-def classify(genes, idx, thr):
-    """genes: iterable of (is_shared, causal_cluster_id, {cid: (rcp, lcp)}, causal_tested).
+def _above(val_pair, idx, thr):
+    return val_pair[idx] > thr
 
-    Returns (n_true_positive, n_false_positive).  A gene contributes nothing
-    unless at least one of its signal clusters clears `thr` on metric `idx`.
 
-    The correct-signal test is by causal-variant identity, which requires that
-    variant to have been fine-mapped at all.  When it was not (`causal_tested`
-    False -- its MAF fell below fm_min_maf, so stage3_index_geno dropped it from
-    the SBAMS), the test falls back to the GENE level: a shared gene that
-    colocalizes counts as a true positive.
+def power_and_fp(hits, idx, thr):
+    """hits: iterable of (self_rcp, self_lcp, {other_gene: (rcp, lcp)}), one entry
+    per defined GWAS trait -- including traits that colocalized with nothing.
 
-    That fallback is sound because of how the simulation is built, not as an
-    approximation.  A shared central locus gives the GWAS trait and the GTEx
-    trait the SAME causal variant, so there is exactly one true signal there.
-    With that variant untested, both credible sets are assembled from tags of
-    that one signal, and fastEnloc colocalizing them is a genuine detection --
-    what is lost is only the ability to confirm the credible set CONTAINS the
-    causal variant, which is a fine-mapping question (the CPIP and
-    *_cs_causative columns) rather than a colocalization one.  Scoring those
-    loci by identity would count every correct colocalization as a false
-    positive and inflate the reported FDR.
+    power = the GWAS trait colocalizes with its OWN GTEx trait, however many other
+            GTEx traits it also hits.
+    fp    = it does NOT colocalize with its own GTEx trait but DOES colocalize with
+            at least one other.
+    Neither when nothing clears the cutoff.  The `elif` is load-bearing: the two
+    outcomes are mutually exclusive, so a correct hit is never also counted wrong.
     """
-    tp = fp = 0
-    for is_shared, causal_cid, sigs, causal_tested in genes:
-        above = [cid for cid, v in sigs.items() if v[idx] > thr]
-        if not above:
-            continue
-        correct = (causal_cid in above) if causal_tested else True
-        if is_shared and correct:
-            tp += 1
-        else:
+    pw = fp = 0
+    for self_rcp, self_lcp, others in hits:
+        if (self_rcp, self_lcp)[idx] > thr:
+            pw += 1
+        elif any(_above(v, idx, thr) for v in others.values()):
             fp += 1
-    return tp, fp
+    return pw, fp
 
 
-def auc_point(genes, n_pos, idx, thr):
+def hit_med(hits, idx, thr):
+    """Median number of DISTINCT GTEx traits colocalized with, over the power
+    traits only, counting the correct trait itself -- so the floor is 1 and a
+    median of 1 means the typical true positive is specific.
+    """
+    counts = []
+    for self_rcp, self_lcp, others in hits:
+        if (self_rcp, self_lcp)[idx] <= thr:
+            continue
+        counts.append(1 + sum(1 for v in others.values() if _above(v, idx, thr)))
+    return median(counts) if counts else "NA"
+
+
+def auc_point(hits, n_pos, idx, thr):
     """Single-operating-point AUC at threshold `thr` -- balanced accuracy.
 
     AUC of the ROC polygon through one measured point:
         (sensitivity + specificity) / 2
     with
-        sensitivity = TP / (defined GWAS traits)
-        specificity = 1 - FP / (all genes evaluated)
+        sensitivity = power / (defined GWAS traits)
+        specificity = 1 - fp / (defined GWAS traits)
 
-    The FP denominator is EVERY gene, not just the flank ones, because under
-    the signal-level definition a causative gene can also emit a false call by
-    colocalizing through the wrong credible set -- so every gene has an
-    opportunity to be wrong.  0.5 is chance; below 0.5 means the calls carry
-    less information than a coin flip at that cutoff.
+    Both denominators are the GWAS-trait count because both outcomes are now
+    indexed on the GWAS trait: each of the n_pos traits can contribute at most
+    one power or one fp, so n_pos is the ceiling for either.  0.5 is chance.
 
     Note this is a per-threshold summary, not a threshold-free ROC-AUC: it
     answers "how good is the classifier AT this cutoff", which is what pairs
-    with the tp/fp columns beside it.
+    with the pow/fp columns beside it, and it is therefore sensitive to where
+    the cutoff happens to fall for a given condition.
     """
-    n = len(genes)
-    if not n_pos or not n:
+    if not n_pos:
         return float("nan")
-    tp, fp = classify(genes, idx, thr)
-    return (tp / n_pos + (1.0 - fp / n)) / 2.0
+    pw, fp = power_and_fp(hits, idx, thr)
+    return (pw / n_pos + (1.0 - fp / n_pos)) / 2.0
 
 
 def header_traits(path):
@@ -296,16 +439,17 @@ def read_params(rep, stage1_tag):
     parameters.  So: stage-4 first, then the workdir copy only when its recorded
     run tag confirms it.
     """
-    if yaml is None:
-        return None
-
     def load(path):
         # Skip the .params.<timestamp>.txt archives left by a conflicting rerun.
         if re.search(r"\.params\.\d{8}T\d{6}", os.path.basename(path)):
             return None
         try:
             with open(path) as fh:
-                data = yaml.safe_load(fh)
+                text = fh.read()
+        except OSError:
+            return None
+        try:
+            data = yaml.safe_load(text) if yaml is not None else _parse_params(text)
         except Exception:
             return None
         return data if isinstance(data, dict) else None
@@ -361,23 +505,35 @@ def causal_maf_by_trait(stage2_dir, cat):
 def tested_flag(maf_by_trait, trait, fm_floor):
     """Was this trait's causal variant in the set handed to DAP-G?
 
-    True when no filter was applied (fm_floor 0) or when its MAF cleared the
-    floor.  Unknown -- no vars table, or the causal variant is missing from it --
-    also reads True, which is the legacy assumption and keeps pre-params runs on
-    one row instead of inventing a split.
+    Three cases, and the difference between the last two matters:
+      - no filter applied (fm_floor 0)            -> True
+      - no vars table at all (empty mapping)      -> True, the legacy assumption,
+        so runs whose stage-2 tables were never fetched behave as before
+      - table present but this trait absent       -> False.  The vars table lists
+        every variant segregating in the panel, so a causal variant missing from
+        it was not a fine-mapping candidate here.  This is not hypothetical: in a
+        500-individual GTEx subsample several causal variants drawn at
+        causal_min_maf=0.001 are monomorphic and drop out entirely.  Counting such
+        a locus in the CPIP denominator would contribute a guaranteed zero and drag
+        the fine-mapping rates down for a reason that is not fine-mapping failure.
+
+    Gates the FINE-MAPPING columns only.  The colocalization columns are scored
+    per trait pair and ignore this flag entirely.
     """
     if not fm_floor:
         return True
+    if not maf_by_trait:
+        return True
     maf = maf_by_trait.get(trait)
-    return True if maf is None else maf >= fm_floor
-
-
-def pct(hits, n):
-    return round(100.0 * hits / n, 1) if n else float("nan")
+    return False if maf is None else maf >= fm_floor
 
 
 def _new_row():
-    return dict(reps=set(), genes=[], n_gwas=0, n_causal_tested=0,
+    # gwas_hits: one (self_rcp, self_lcp, others) record per replicate x GWAS
+    # trait. Records are appended rather than keyed by trait name so that pooling
+    # replicates cannot collide when two stage-1 seeds happen to place a causal
+    # variant at the same position.
+    return dict(reps=set(), gwas_hits=[], n_gwas=0, n_causal_tested=0,
                 gw_cpip=[], gt_cpip=[],
                 gw_cs_all=[], gw_cs_caus=[], gt_cs_all=[], gt_cs_caus=[])
 
@@ -445,8 +601,8 @@ def _collect_one(rows, rep, cat_letter, s2):
 
     # Was each locus's defined causal variant actually in the tested set? This
     # gates the FINE-MAPPING columns only. Colocalization is scored over every
-    # locus -- see classify() for why an untested causal variant still permits a
-    # genuine true positive.
+    # locus: it is a trait-pair question, so an untested causal variant still
+    # permits a genuine detection through a tagging variant.
     gwas_causal_maf = causal_maf_by_trait(s2, gwas_cat)
 
     # ---- GWAS side: independent of the eQTL panel ----
@@ -478,7 +634,12 @@ def _collect_one(rows, rep, cat_letter, s2):
             continue
         gtex_traits = header_traits(tf[0])
         gtex_n = n_individuals(tf[0])
-        sigs = read_sig_out(sig[0])
+        sig_rows = read_sig_out(sig[0])
+        partners = gwas_partners(sig_rows)
+        # Only built when a dump was asked for: it exists to measure the
+        # merged-locus policy, not to feed the table.
+        partners_strict = (gwas_partners(sig_rows, drop_merged=True)
+                           if _TRAIT_DUMP is not None else None)
         gtex_causal_maf = causal_maf_by_trait(s2, gcat)
 
         # The fine-mapping settings and the causal floor are part of the GROUPING
@@ -511,22 +672,50 @@ def _collect_one(rows, rep, cat_letter, s2):
         r["gw_cs_all"].extend(gw["cs_all"])
         r["gw_cs_caus"].extend(gw["cs_caus"])
 
-        # One pass over every GTEx gene -- causative and flank alike. The flank
-        # genes are needed here, not just for the FP count: under the signal-level
-        # definition a causative gene that colocalizes through the wrong credible
-        # set is itself a false positive, so the classification needs each gene's
-        # causal cluster id.
+        # Colocalization is scored per GWAS trait, over EVERY defined GWAS trait --
+        # iterating the declared list rather than `partners` keys keeps traits that
+        # colocalized with nothing in the denominator instead of silently dropping
+        # them and inflating power.
+        for tr in gwas_traits:
+            d = partners.get(tr, {})
+            self_rcp, self_lcp = d.get(tr, (0.0, 0.0))
+            others = {g: v for g, v in d.items() if g != tr}
+            r["gwas_hits"].append((self_rcp, self_lcp, others))
+            if _TRAIT_DUMP is not None:
+                ds = partners_strict.get(tr, {})
+                s_rcp, s_lcp = ds.get(tr, (0.0, 0.0))
+                oth_s = {g: v for g, v in ds.items() if g != tr}
+                _TRAIT_DUMP.append(dict(
+                    root=os.path.basename(os.path.dirname(rep.rstrip("/"))),
+                    rep=os.path.basename(rep), cat=cat_letter,
+                    gwas_cat=gwas_cat, gtex_cat=gcat, gtex_n=gtex_n,
+                    causal_min_maf=causal_maf, fm_min_maf=fm_floor,
+                    gwas_mult=gwas_mult, gtex_mult=gtex_mult, trait=tr,
+                    # Both sides: the GWAS panel and the GTEx panel filter
+                    # independently, and a variant can clear the floor in one and
+                    # not the other (the 500-person panel drops the most).
+                    tested_gwas=int(tested_flag(gwas_causal_maf, tr, fm_floor)),
+                    tested_gtex=int(tested_of(tr)),
+                    self_rcp=self_rcp, self_lcp=self_lcp,
+                    n_other_50=sum(1 for v in others.values() if v[0] > 0.5),
+                    n_other_90=sum(1 for v in others.values() if v[0] > 0.9),
+                    self_rcp_strict=s_rcp, self_lcp_strict=s_lcp,
+                    n_other_50_strict=sum(1 for v in oth_s.values() if v[0] > 0.5),
+                    n_other_90_strict=sum(1 for v in oth_s.values() if v[0] > 0.9),
+                ))
+
+        # Separate pass over every GTEx gene for the FINE-MAPPING columns. Flank
+        # genes contribute to cs_all (it describes every credible set the panel
+        # produced) but not to the causal-variant columns, which are defined only
+        # at the shared loci.
         for tr in gtex_traits:
             f = os.path.join(outdir, f"{tr}.dapg.out")
             if not os.path.exists(f):
                 continue
             clus, cpip, csize = parse_dapg(f)
             cid = clus.get("snp" + tr[2:], -1)
-            is_shared = tr in gwas_traits
-            tested = tested_of(tr)
-            r["genes"].append((is_shared, cid, sigs.get(tr, {}), tested))
             r["gt_cs_all"].extend(csize.values())
-            if is_shared and tested:
+            if tr in gwas_traits and tested_of(tr):
                 r["gt_cpip"].append(cpip.get(cid, 0.0) if cid > 0 else 0.0)
                 if cid > 0 and cid in csize:
                     r["gt_cs_caus"].append(csize[cid])
@@ -539,17 +728,30 @@ def main():
                     help="fallback -ld_control, used only when a run's "
                          "Snakemake metadata is unavailable")
     ap.add_argument("-o", "--out", default="-")
+    ap.add_argument("--dump-traits", metavar="PATH",
+                    help="also write a long-format TSV with one row per GWAS "
+                         "trait per GTEx panel, carrying the causal-variant "
+                         "tested flags and the hit counts under both the default "
+                         "merged-locus policy and the strict one")
     a = ap.parse_args()
+
+    global _TRAIT_DUMP
+    if a.dump_traits:
+        _TRAIT_DUMP = []
 
     allrows = {}
     for root in a.roots:
         for k, v in collect(root).items():
             if k in allrows:
-                for f in ("genes", "gw_cpip", "gt_cpip",
+                for f in ("gwas_hits", "gw_cpip", "gt_cpip",
                           "gw_cs_all", "gw_cs_caus", "gt_cs_all", "gt_cs_caus"):
                     allrows[k][f].extend(v[f])
                 allrows[k]["reps"] |= v["reps"]
-                allrows[k]["n_gwas"] += v["n_gwas"]
+                # Both counters, not just n_gwas: the earlier version omitted
+                # n_causal_tested here, so a grouping key present in two roots
+                # silently reported only the first root's tested count.
+                for f in ("n_gwas", "n_causal_tested"):
+                    allrows[k][f] += v[f]
             else:
                 allrows[k] = v
 
@@ -569,11 +771,14 @@ def main():
                             kv[0][6] if kv[0][6] else 0, -kv[0][1],
                             kv[0][2], kv[0][3])):
         cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source = key
-        out = []
-        for idx, thr in ((0, 0.5), (0, 0.9), (1, 0.5), (1, 0.9)):
-            ntp, nfp = classify(r["genes"], idx, thr)
-            out.append((pct(ntp, r["n_gwas"]), pct(nfp, ntp + nfp)))
-        (r50, r90, l50, l90) = out
+        hits = r["gwas_hits"]
+        # (idx, thr) pairs in COLUMNS order: RCP at .5/.9 then LCP at .5/.9.
+        # Each column family tests its own metric only -- LCP >= RCP always, so
+        # the lcp counts are >= their rcp counterparts.
+        counts = {k: power_and_fp(hits, *k)
+                  for k in ((0, 0.5), (0, 0.9), (1, 0.5), (1, 0.9))}
+        (r50, r90, l50, l90) = (counts[(0, 0.5)], counts[(0, 0.9)],
+                                counts[(1, 0.5)], counts[(1, 0.9)])
         fm_filtered = "NA" if fmf is None else str(fmf)
         # Measured from Snakemake's record of the dap-g command line; the
         # --fm-r2 CLI value is only a fallback when that metadata is gone.
@@ -581,14 +786,17 @@ def main():
         vals = [
             cat, DEMOGRAPHY.get(cat, "?"), gtex_n, len(r["reps"]),
             causal_maf, r["n_gwas"], r["n_causal_tested"],
+            len(r["gw_cpip"]), len(r["gt_cpip"]),
             fm_filtered, fm_r2, source, gwm, gtm,
             r50[0], r50[1], r90[0], r90[1], l50[0], l50[1], l90[0], l90[1],
-            round(auc_point(r["genes"], r["n_gwas"], 0, 0.5), 3),
-            round(auc_point(r["genes"], r["n_gwas"], 0, 0.9), 3),
-            pct(sum(1 for x in r["gw_cpip"] if x > 0.5), len(r["gw_cpip"])),
-            pct(sum(1 for x in r["gt_cpip"] if x > 0.5), len(r["gt_cpip"])),
-            pct(sum(1 for x in r["gw_cpip"] if x > 0.9), len(r["gw_cpip"])),
-            pct(sum(1 for x in r["gt_cpip"] if x > 0.9), len(r["gt_cpip"])),
+            hit_med(hits, 0, 0.5), hit_med(hits, 0, 0.9),
+            hit_med(hits, 1, 0.5), hit_med(hits, 1, 0.9),
+            round(auc_point(hits, r["n_gwas"], 0, 0.5), 3),
+            round(auc_point(hits, r["n_gwas"], 0, 0.9), 3),
+            sum(1 for x in r["gw_cpip"] if x > 0.5),
+            sum(1 for x in r["gt_cpip"] if x > 0.5),
+            sum(1 for x in r["gw_cpip"] if x > 0.9),
+            sum(1 for x in r["gt_cpip"] if x > 0.9),
             mean(r["gw_cs_all"]), mean(r["gw_cs_caus"]),
             mean(r["gt_cs_all"]), mean(r["gt_cs_caus"]),
             med(r["gw_cs_all"]), med(r["gw_cs_caus"]),
@@ -597,6 +805,32 @@ def main():
         print("\t".join(str(v) for v in vals), file=fh)
     if fh is not sys.stdout:
         fh.close()
+
+    # Provenance check, on stderr so it never contaminates the TSV. A non-zero
+    # over-cutoff count means colocalizing signals could not be attributed to a
+    # GWAS trait and were excluded from every count -- i.e. the numbers are
+    # understated and the sig.out naming needs re-checking.
+    s = _SIG_STATS
+    print(f"[sig.out] {s['rows']} signals read; {s['no_gwas']} with no GWAS locus "
+          f"({s['no_gwas_over_half']} of those above 0.5)", file=sys.stderr)
+    if s["no_gwas_over_half"]:
+        print("[sig.out] WARNING: dropped signals that cleared 0.5 -- power and "
+              "fp counts are understated.", file=sys.stderr)
+    # Merged GWAS loci are credited to every constituent trait (see read_sig_out),
+    # so a large over-cutoff count here means a meaningful share of the calls rest
+    # on an attribution that fastEnloc itself left ambiguous.
+    print(f"[sig.out] {s['merged']} signals spanned MERGED GWAS loci "
+          f"({s['merged_over_half']} of those above 0.5), credited to every "
+          f"constituent trait", file=sys.stderr)
+
+    if _TRAIT_DUMP is not None:
+        cols = list(_TRAIT_DUMP[0]) if _TRAIT_DUMP else []
+        with open(a.dump_traits, "w") as dh:
+            print("\t".join(cols), file=dh)
+            for rec in _TRAIT_DUMP:
+                print("\t".join(str(rec[c]) for c in cols), file=dh)
+        print(f"[dump] {len(_TRAIT_DUMP)} trait records -> {a.dump_traits}",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
