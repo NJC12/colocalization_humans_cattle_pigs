@@ -51,15 +51,17 @@ causal_min_maf the MAF floor the CAUSATIVE variants were drawn from -- a distinc
               knob from the fine-mapping floor (fm_filtered/fm_r2) and from the
               GWAS floor.  Part of the grouping key: the same cell rerun at a
               different causal floor has different phenotypes and must not pool.
-causal_tested whether the defined causal variant was itself in the tested set,
-              i.e. its MAF cleared the fine-mapping floor.  When it is False the
-              true-positive test CANNOT fire -- the correct-cluster match is by
-              causal-variant identity, and that variant is absent from the SBAMS --
-              so every call at such a locus is a false positive by construction.
-              Rows are split on it rather than pooled, so a 0% / 100% row is
-              legible as "unfindable by design" instead of looking like failure.
-              Crediting a variant that merely TAGS the causal one is a separate
-              question this table does not yet answer.
+n_causal_tested of the `n_gwas_traits` defined GWAS loci, how many had their
+              causal variant fine-mapped at all -- i.e. its MAF cleared the
+              fine-mapping floor.  Below `causal_min_maf` < `fm_min_maf` this is
+              less than n_gwas_traits, and it is the denominator of the CPIP and
+              *_cs_causative columns.  The colocalization columns use ALL loci: a
+              locus whose causal variant went untested can still colocalize
+              correctly, because the GWAS and GTEx traits there share that one
+              variant and both credible sets are built from tags of it.  See
+              classify().  What such a locus cannot tell you is whether the
+              credible set contains the causal variant -- a fine-mapping question,
+              not a colocalization one.
 params_source `params` when the parameters were read from the run's params file,
               `inferred` when they were reverse-engineered from paths, row counts
               and Snakemake metadata (every run predating the params file).
@@ -81,8 +83,8 @@ DEMOGRAPHY = {"A": "human", "B": "human", "C": "human", "D": "human",
               "E": "cattle", "F": "cattle", "G": "cattle"}
 
 COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
-           "causal_min_maf", "causal_tested", "fm_filtered", "fm_r2",
-           "params_source", "gwas_mult", "gtex_mult",
+           "causal_min_maf", "n_gwas_traits", "n_causal_tested",
+           "fm_filtered", "fm_r2", "params_source", "gwas_mult", "gtex_mult",
            "enloc_tp_rcp50", "enloc_fp_rcp50", "enloc_tp_rcp90", "enloc_fp_rcp90",
            "enloc_tp_lcp50", "enloc_fp_lcp50", "enloc_tp_lcp90", "enloc_fp_lcp90",
            "auc_enloc_50", "auc_enloc_90",
@@ -140,17 +142,35 @@ def read_sig_out(path):
 
 
 def classify(genes, idx, thr):
-    """genes: iterable of (is_shared, causal_cluster_id, {cid: (rcp, lcp)}).
+    """genes: iterable of (is_shared, causal_cluster_id, {cid: (rcp, lcp)}, causal_tested).
 
     Returns (n_true_positive, n_false_positive).  A gene contributes nothing
     unless at least one of its signal clusters clears `thr` on metric `idx`.
+
+    The correct-signal test is by causal-variant identity, which requires that
+    variant to have been fine-mapped at all.  When it was not (`causal_tested`
+    False -- its MAF fell below fm_min_maf, so stage3_index_geno dropped it from
+    the SBAMS), the test falls back to the GENE level: a shared gene that
+    colocalizes counts as a true positive.
+
+    That fallback is sound because of how the simulation is built, not as an
+    approximation.  A shared central locus gives the GWAS trait and the GTEx
+    trait the SAME causal variant, so there is exactly one true signal there.
+    With that variant untested, both credible sets are assembled from tags of
+    that one signal, and fastEnloc colocalizing them is a genuine detection --
+    what is lost is only the ability to confirm the credible set CONTAINS the
+    causal variant, which is a fine-mapping question (the CPIP and
+    *_cs_causative columns) rather than a colocalization one.  Scoring those
+    loci by identity would count every correct colocalization as a false
+    positive and inflate the reported FDR.
     """
     tp = fp = 0
-    for is_shared, causal_cid, sigs in genes:
+    for is_shared, causal_cid, sigs, causal_tested in genes:
         above = [cid for cid, v in sigs.items() if v[idx] > thr]
         if not above:
             continue
-        if is_shared and causal_cid in above:
+        correct = (causal_cid in above) if causal_tested else True
+        if is_shared and correct:
             tp += 1
         else:
             fp += 1
@@ -357,7 +377,8 @@ def pct(hits, n):
 
 
 def _new_row():
-    return dict(reps=set(), genes=[], n_gwas=0, gw_cpip=[], gt_cpip=[],
+    return dict(reps=set(), genes=[], n_gwas=0, n_causal_tested=0,
+                gw_cpip=[], gt_cpip=[],
                 gw_cs_all=[], gw_cs_caus=[], gt_cs_all=[], gt_cs_caus=[])
 
 
@@ -422,26 +443,32 @@ def _collect_one(rows, rep, cat_letter, s2):
     if params is not None:
         gw_filt = fm_floor > 0
 
-    # Was each locus's defined causal variant actually in the tested set? A locus
-    # whose causal variant was filtered out cannot produce a true positive, since
-    # the correct-cluster match is by that variant's identity.
+    # Was each locus's defined causal variant actually in the tested set? This
+    # gates the FINE-MAPPING columns only. Colocalization is scored over every
+    # locus -- see classify() for why an untested causal variant still permits a
+    # genuine true positive.
     gwas_causal_maf = causal_maf_by_trait(s2, gwas_cat)
 
     # ---- GWAS side: independent of the eQTL panel ----
     gw_out = os.path.join(s3root, gwas_cat, "outputs")
-    gw_by_tested = {}
+    gw = dict(cpip=[], cs_all=[], cs_caus=[])
     for tr in gwas_traits:
         f = os.path.join(gw_out, f"{tr}.dapg.out")
         if not os.path.exists(f):
             continue
         clus, cpip, csize = parse_dapg(f)
         cid = clus.get("snp" + tr[2:], -1)
-        b = gw_by_tested.setdefault(tested_flag(gwas_causal_maf, tr, fm_floor),
-                                    dict(cpip=[], cs_all=[], cs_caus=[]))
-        b["cpip"].append(cpip.get(cid, 0.0) if cid > 0 else 0.0)
-        b["cs_all"].extend(csize.values())
+        # cs_all is unconditional: it describes every credible set the panel
+        # produced, which is meaningful whether or not the causal variant is in
+        # one. CPIP and cs_caus are about the causal variant specifically, so a
+        # locus where it was never a candidate would contribute a guaranteed 0
+        # and silently drag the mean down.
+        gw["cs_all"].extend(csize.values())
+        if not tested_flag(gwas_causal_maf, tr, fm_floor):
+            continue
+        gw["cpip"].append(cpip.get(cid, 0.0) if cid > 0 else 0.0)
         if cid > 0 and cid in csize:
-            b["cs_caus"].append(csize[cid])
+            gw["cs_caus"].append(csize[cid])
 
     for gcat in gtex_cats:
         tf = glob.glob(os.path.join(s2, f"{gcat}_traits_*.tsv"))
@@ -462,31 +489,27 @@ def _collect_one(rows, rep, cat_letter, s2):
                    else detect_fm_filtered(s2, os.path.join(s3root, gcat), gcat, fm_floor))
         fmf = gw_filt if gw_filt is not None else gt_filt
 
-        def row_for(tested):
-            key = (cat_letter, gtex_n, gwas_mult, gtex_mult, causal_maf, tested,
+        def row():
+            key = (cat_letter, gtex_n, gwas_mult, gtex_mult, causal_maf,
                    fmf, ldc, source)
             r = rows.setdefault(key, _new_row())
             r["reps"].add(os.path.basename(rep))
             return r
 
-        # A shared locus is only findable if its causal variant survived the filter
-        # on BOTH sides: the GWAS-side cluster feeds the CPIP columns and the
-        # GTEx-side cluster feeds the correct-match test.
-        def tested_of(tr, is_shared):
-            t = tested_flag(gtex_causal_maf, tr, fm_floor)
-            if is_shared:
-                t = t and tested_flag(gwas_causal_maf, tr, fm_floor)
-            return t
+        # Whether the causal variant was fine-mapped on the GTEx side, which is the
+        # side whose cluster ids the correct-match test uses.
+        def tested_of(tr):
+            return tested_flag(gtex_causal_maf, tr, fm_floor)
 
-        # GWAS aggregates and the true-positive denominator are bucketed by the
-        # same expression, so a locus and its GWAS counterpart land on one row.
-        for tr in gwas_traits:
-            row_for(tested_of(tr, True))["n_gwas"] += 1
-        for tested, b in gw_by_tested.items():
-            r = row_for(tested)
-            r["gw_cpip"].extend(b["cpip"])
-            r["gw_cs_all"].extend(b["cs_all"])
-            r["gw_cs_caus"].extend(b["cs_caus"])
+        r = row()
+        # Denominator for the true-positive rate: every defined GWAS trait. Loci
+        # whose causal variant went untested stay IN it -- they can still
+        # colocalize, so excluding them would understate the achievable rate.
+        r["n_gwas"] += len(gwas_traits)
+        r["n_causal_tested"] += sum(1 for tr in gwas_traits if tested_of(tr))
+        r["gw_cpip"].extend(gw["cpip"])
+        r["gw_cs_all"].extend(gw["cs_all"])
+        r["gw_cs_caus"].extend(gw["cs_caus"])
 
         # One pass over every GTEx gene -- causative and flank alike. The flank
         # genes are needed here, not just for the FP count: under the signal-level
@@ -500,10 +523,10 @@ def _collect_one(rows, rep, cat_letter, s2):
             clus, cpip, csize = parse_dapg(f)
             cid = clus.get("snp" + tr[2:], -1)
             is_shared = tr in gwas_traits
-            r = row_for(tested_of(tr, is_shared))
-            r["genes"].append((is_shared, cid, sigs.get(tr, {})))
+            tested = tested_of(tr)
+            r["genes"].append((is_shared, cid, sigs.get(tr, {}), tested))
             r["gt_cs_all"].extend(csize.values())
-            if is_shared:
+            if is_shared and tested:
                 r["gt_cpip"].append(cpip.get(cid, 0.0) if cid > 0 else 0.0)
                 if cid > 0 and cid in csize:
                     r["gt_cs_caus"].append(csize[cid])
@@ -541,12 +564,11 @@ def main():
     for key, r in sorted(
             allrows.items(),
             # category, then causal floor (descending, so the historical 0.01 sorts
-            # first), then untested-causal rows after tested ones, then the
-            # fine-mapping settings, then panel size and the multipliers.
-            key=lambda kv: (kv[0][0], -kv[0][4], not kv[0][5], bool(kv[0][6]),
-                            kv[0][7] if kv[0][7] else 0, -kv[0][1],
+            # first), then the fine-mapping settings, then panel size and multipliers.
+            key=lambda kv: (kv[0][0], -kv[0][4], bool(kv[0][5]),
+                            kv[0][6] if kv[0][6] else 0, -kv[0][1],
                             kv[0][2], kv[0][3])):
-        cat, gtex_n, gwm, gtm, causal_maf, causal_tested, fmf, ldc, source = key
+        cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source = key
         out = []
         for idx, thr in ((0, 0.5), (0, 0.9), (1, 0.5), (1, 0.9)):
             ntp, nfp = classify(r["genes"], idx, thr)
@@ -558,8 +580,8 @@ def main():
         fm_r2 = a.fm_r2 if ldc is None else ldc
         vals = [
             cat, DEMOGRAPHY.get(cat, "?"), gtex_n, len(r["reps"]),
-            causal_maf, str(causal_tested), fm_filtered, fm_r2, source,
-            gwm, gtm,
+            causal_maf, r["n_gwas"], r["n_causal_tested"],
+            fm_filtered, fm_r2, source, gwm, gtm,
             r50[0], r50[1], r90[0], r90[1], l50[0], l50[1], l90[0], l90[1],
             round(auc_point(r["genes"], r["n_gwas"], 0, 0.5), 3),
             round(auc_point(r["genes"], r["n_gwas"], 0, 0.9), 3),
