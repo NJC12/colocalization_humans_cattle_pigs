@@ -74,6 +74,15 @@ rule stage2_split_pheno:
             if config.get("handoff_ticks") is not None else ""
         ),
         min_maf            = config["min_maf"],
+        # MAF floor for CAUSATIVE-variant eligibility -- the central selected
+        # pool, the central neutral recipients under neutral_trait_vars, and the
+        # flanking GTEx loci. Independent of min_maf (which gates the GWAS in
+        # stage 5) and of fm_min_maf (which gates the SBAMS handed to DAP-G in
+        # stage 3); set it below those two to let the true causal variant fall
+        # out of the tested set, so it is only reachable through a tagging
+        # variant. It is also the floor that names the stage-2 output dir, since
+        # it is the only one of the three that changes what stage 2 produces.
+        causal_min_maf     = config["causal_min_maf"],
         L                  = config["L"],
         gtex_size          = config["gtex_size"],
         already_neutral    = config.get("already_includes_neutral", True),
@@ -130,6 +139,7 @@ rule stage2_split_pheno:
             --Q_scaling {params.Q_scaling} \
             {params.handoff_flag} \
             --min_maf {params.min_maf} \
+            --causal_min_maf {params.causal_min_maf} \
             --length {params.L} \
             --r2_value 0.2 \
             --gtex_size {params.gtex_size} \
@@ -160,6 +170,17 @@ rule stage3_index_geno:
         bgzip      = config.get("bgzip_binary", "bgzip"),
         tabix      = config.get("tabix_binary", "tabix"),
         htslib_lib = config.get("htslib_lib", ""),
+        # MAF floor applied to the genotypes handed to DAP-G. 0 (default) keeps
+        # every variant, which is what rounds 1-3 did: `min_maf` gates causal
+        # variant selection and the plink GLM, but never reached the SBAMS, so
+        # DAP-G fine-mapped singletons too. That is not cosmetic -- in a
+        # +/-250 kb window human carries 2847 candidates of which 2516 (88%)
+        # are MAF < 0.01, against cattle's 366 of which 34 (9%). Under DAP-G's
+        # exchangeable prior the human arm therefore pays ~1 log10 unit of
+        # prior odds relative to cattle for variants that cannot support a
+        # credible eQTL at n=1000 anyway. Setting fm_min_maf=0.01 equalises the
+        # pools at 327 vs 330.
+        fm_min_maf = config.get("fm_min_maf", 0),
     log: os.path.join(paths.workdir(config), "logs", "stage3_index_{cat}.log")
     resources:
         # Measured over 18 round-3 jobs: max 1:47, max RSS 110 MB.
@@ -177,11 +198,26 @@ rule stage3_index_geno:
         mkdir -p "$(dirname {output.gz})" "$(dirname {log})"
         # Prepend chrom (1) and numeric position parsed from snp_id, sort by
         # position, bgzip, tabix-index. Mirrors submit_revision_dapg_o2.sh.
-        awk 'BEGIN{{OFS="\t"}} {{pos=$2; sub(/^snp/,"",pos); print "1", pos, $0}}' "{input.geno}" \
+        #
+        # SBAMS geno rows are: geno <snp_id> <dosage per individual...>, so the
+        # allele count is the sum of fields 3..NF over NF-2 diploid individuals.
+        # The MAF block is skipped entirely when fm_min_maf is 0.
+        awk -v mm={params.fm_min_maf} 'BEGIN{{OFS="\t"}}
+             mm > 0 {{
+                 s = 0; for (i = 3; i <= NF; i++) s += $i;
+                 n = NF - 2; if (n <= 0) next;
+                 f = s / (2 * n); if (f > 0.5) f = 1 - f;
+                 if (f < mm) next;
+             }}
+             {{pos=$2; sub(/^snp/,"",pos); print "1", pos, $0}}' "{input.geno}" \
             | sort -k2,2n -S 4G --parallel={resources.cpus_per_task} \
             | "{params.bgzip}" -@ {resources.cpus_per_task} > "{output.gz}.tmp" 2> {log}
         mv "{output.gz}.tmp" "{output.gz}"
         "{params.tabix}" -s 1 -b 2 -e 2 "{output.gz}"
+        # Sidecar recording the filter actually applied, so downstream summaries
+        # can report it without re-deriving it from row counts. Not declared as
+        # a rule output: runs predating this file must stay adoptable.
+        echo "{params.fm_min_maf}" > "{output.gz}.fmmaf"
         """
 
 
@@ -216,6 +252,40 @@ checkpoint stage3_manifest:
                 f.write(t + "\n")
 
 
+def _fm_filtered(cfg):
+    """True when the SBAMS handed to DAP-G is MAF-filtered (fm_min_maf > 0)."""
+    try:
+        return float(cfg.get("fm_min_maf", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# How much filtering actually removes, measured per +/-250 kb cis-window on the
+# g5t20 cell. This asymmetry is the whole reason the two species are treated
+# differently below: filtering is a large change for human and a small one for
+# cattle, so only human's resources can safely be cut hard.
+#     human   2847 candidates ->  327 at MAF >= 0.01   (-88%)
+#     cattle   366 candidates ->  330 at MAF >= 0.01   (-10%)
+def _dapg_runtime(wc, attempt):
+    if _fm_filtered(config) and config["species"] == "human":
+        # 8.7x fewer candidates. DAP-G's per-locus cost is at least linear in
+        # the candidate count (model search) and quadratic in the LD block it
+        # has to build, so the true speedup is >= 8.7x. Against a measured
+        # hgwas median 19:19 / max 23:50 unfiltered, 20 min is ~7x the
+        # projected filtered max; hgtex (max 5:19) gets 15.
+        base = 20 if wc.cat.endswith("gwas") else 15
+    elif _fm_filtered(config):
+        # Cattle: only ~10% of candidates go, so the cut is modest. Trimmed
+        # against measured cgwas max 4:44 / cgtex max 6:29 rather than the
+        # human-driven 60/30 defaults.
+        base = 30 if wc.cat.endswith("gwas") else 20
+    else:
+        base = 60 if wc.cat.endswith("gwas") else 30
+    # Attempt-scaled so a walltime kill is actually recoverable: --restart-times
+    # is 2, but a retry at an unchanged runtime would just be killed again.
+    return base * attempt
+
+
 def _dapg_mem_mb_base(wc):
     # Per-category base memory.
     #
@@ -227,6 +297,12 @@ def _dapg_mem_mb_base(wc):
     # covariates, where hgwas RSS was 16-40 GB. Both changes cut the SBAMS size.
     cat = wc.cat
     if config["species"] == "human":
+        if _fm_filtered(config):
+            # 2847 -> 327 candidates. The genotype matrix shrinks 8.7x and the
+            # LD matrix ~76x, and the LD matrix is what made hgwas the heavy
+            # category (2580 MB peak). Projected filtered peak is a few hundred
+            # MB; 4000/2000 leaves ~10x headroom and retries still double.
+            return 4000 if cat.endswith("gwas") else 2000
         if cat.endswith("gwas"):
             return 8000        # 3.1x measured peak; retries give 16/24 GB
         if cat == "hgtex":
@@ -241,6 +317,12 @@ def _dapg_mem_mb_base(wc):
     # cgwas and a much larger sparse-LD matrix. E is not a safe proxy for G.
     # Revisit once F/G have run under round-3 code; until then 32 GB stands,
     # scaling 32 -> 64 -> 96 GB on retries.
+    #
+    # fm_min_maf does NOT change this. Cattle loses only ~10% of its candidates
+    # to a MAF >= 0.01 floor (366 -> 330 per window) because a bottlenecked
+    # population carries few rare variants in the first place -- the filter is
+    # nearly a no-op here, so it justifies no reduction. Only human's memory is
+    # cut above.
     if cat.endswith("gwas"):
         return 32000
     return 4000                # cgtex, cgtex_smaller: 35x measured peak
@@ -285,10 +367,10 @@ rule stage3_dapg_locus:
         #     hgtex  med  1:22  max  3:02      cgtex         med 1:37  max 5:37
         #     hgtex_smaller med 1:47 max 5:19  cgtex_smaller med 1:53  max 6:29
         # 60 min for *gwas is 2.5x the observed hgwas max; 30 min for *gtex is
-        # 4.6x the observed gtex max. A walltime kill is retried by
-        # --restart-times, so the failure mode here is recoverable.
+        # 4.6x the observed gtex max. See _dapg_runtime for the fm_min_maf
+        # tiers and for why retries now get proportionally more walltime.
         slurm_partition = "short",
-        runtime         = lambda wc: 60 if wc.cat.endswith("gwas") else 30,
+        runtime         = _dapg_runtime,
         mem_mb          = _dapg_mem_mb,
         cpus_per_task   = 4,
     shell:

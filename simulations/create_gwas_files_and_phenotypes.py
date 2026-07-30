@@ -12,6 +12,10 @@ import subprocess
 import math
 import gzip
 
+# sys.path[0] is this script's directory, so `helpers` resolves however the script
+# is invoked -- by absolute path from a Snakemake rule, or by hand from anywhere.
+from helpers import params_record
+
 
 def str2bool(s):
     # argparse's `type=bool` is broken: bool("False") is True. Use this instead.
@@ -267,16 +271,19 @@ def subsample_traits(df, n, seed):
     keep = sorted(rng.choice(df.shape[0], size=int(n), replace=False).tolist())
     return df.iloc[keep]
 
-def select_flank_gtex(gtex_vars, min_maf, flank_lo, flank_hi, n, seed):
+def select_flank_gtex(gtex_vars, causal_min_maf, flank_lo, flank_hi, n, seed):
     """GTEx-only trait loci drawn from the two edge buffers: positions
     <= flank_lo (region start .. 500 kb in) or >= flank_hi (500 kb before the
     region end .. end). Same causal eligibility as the central loci
-    (selco != 0, MAF >= min_maf) but measured in the GTEx sample, since these
-    traits are only phenotyped there. Randomly keeps `n` (seeded); uses all if
-    fewer exist. These give GTEx loci >=500 kb from every central GWAS locus,
-    for a non-colocalization comparison."""
+    (selco != 0, MAF >= causal_min_maf) but measured in the GTEx sample, since
+    these traits are only phenotyped there. Randomly keeps `n` (seeded); uses all
+    if fewer exist. These give GTEx loci >=500 kb from every central GWAS locus,
+    for a non-colocalization comparison.
+
+    The floor is causal_min_maf, not min_maf: these loci ARE causative, so they
+    are drawn from the same pool as the central ones. See --causal_min_maf."""
     flank = gtex_vars.loc[
-        (gtex_vars['maf'] >= min_maf) & (gtex_vars['selco'] != 0)
+        (gtex_vars['maf'] >= causal_min_maf) & (gtex_vars['selco'] != 0)
         & ((gtex_vars['position'] <= flank_lo) | (gtex_vars['position'] >= flank_hi))
     ]
     return subsample_traits(flank, n, seed)
@@ -423,63 +430,13 @@ def write_traits_as_sbams(df, output_path):
 # Measured on round-2 output: ~76-81% of the causal variant's genotype variance
 # absorbed in cattle vs ~18% in human. See scripts/run_plink_glm.sh.
 
-def get_commands(gwas_scaling, gtex_scaling, min_maf, sim_dir, run_hums, run_cows):
-    commands = []
-    commands.append('# To run locally')
-    commands.append(f'cd {sim_dir}')
-    commands.append('mkdir -p plink_analysis/glm')
-    commands.append('cp *.vcf plink_analysis')
-    commands.append('mv *.pheno plink_analysis')
-    if run_cows:
-        commands.append('awk \'BEGIN{OFS="\\t"} $1 == 1 {$3="snp"$2; print $0}\' cgwas.vcf | gzip > cgwas.dap.vcf.gz')
-        commands.append('awk \'BEGIN{OFS="\\t"} $1 == 1 {$3="snp"$2; print $0}\' cgtex.vcf | gzip > cgtex.dap.vcf.gz')
-    if run_hums:
-        commands.append('awk \'BEGIN{OFS="\\t"} $1 == 1 {$3="snp"$2; print $0}\' hgwas.vcf | gzip > hgwas.dap.vcf.gz')
-        commands.append('awk \'BEGIN{OFS="\\t"} $1 == 1 {$3="snp"$2; print $0}\' hgtex.vcf | gzip > hgtex.dap.vcf.gz')
-    commands.append('scp -A -P 2222 -J njc12@transfer02.o2.rc.hms.harvard.edu * nconnally@127.0.0.1:/net/home/nconnally/comparative_colocalization/fastenloc_simulations/tmp_upload')
-    commands.append('scp -A -P 2222 -J njc12@transfer01.o2.rc.hms.harvard.edu * nconnally@127.0.0.1:/net/home/nconnally/comparative_colocalization/fastenloc_simulations/tmp_upload')
-    commands.append('')
-    commands.append('# To run on muhee')
-    commands.append(f'cd /net/home/nconnally/comparative_colocalization/fastenloc_simulations')
-    commands.append(f'mkdir gwas_scaling_{gwas_scaling}_gtex_scaling_{gtex_scaling}_min_maf_{min_maf}')
-    commands.append(f'cd gwas_scaling_{gwas_scaling}_gtex_scaling_{gtex_scaling}_min_maf_{min_maf}')
-    commands.append(f'mkdir cgtex cgwas hgtex hgwas eo vcf')
-    commands.append('mv ../tmp_upload/*vcf.gz vcf')
-    if run_cows:
-        commands.append('mv ../tmp_upload/cgtex*.sbams cgtex')
-        commands.append('mv ../tmp_upload/cgwas*.sbams cgwas')
-    if run_hums:
-        commands.append('mv ../tmp_upload/hgtex*.sbams hgtex')
-        commands.append('mv ../tmp_upload/hgwas*.sbams hgwas')
-    base_submission = f'qsub ../run_dapg_portion.sh $PWD'
-    if run_cows:
-        commands.append(f'{base_submission} cgtex_scaling_{gtex_scaling} 0 200 0.75 16')
-        commands.append(f'{base_submission} cgtex_scaling_{gtex_scaling} 200 400 0.75 24')
-        commands.append(f'{base_submission} cgwas_scaling_{gwas_scaling} 0 200 0.75 32')
-        commands.append(f'{base_submission} cgwas_scaling_{gwas_scaling} 200 400 0.75 40')
-    if run_hums:
-        commands.append(f'{base_submission} hgtex_scaling_{gtex_scaling} 0 100 0.75 48')
-        commands.append(f'{base_submission} hgwas_scaling_{gwas_scaling} 0 100 0.75 56')
-    commands.append('')
-    commands.append('# plink commands')
-    commands.append('# "plink2" must call the plink2 binary')
-    commands.append(f'cd {sim_dir}/plink_analysis')
-    if run_cows:
-        commands.append('# cgwas')
-        commands.append('plink2 --vcf cgwas.vcf --make-pgen --out cgwas')
-        commands.append(f'plink2 --pfile cgwas --maf 0.01 --glm hide-covar allow-no-covars --pheno cgwas_traits.scaling_{gwas_scaling}.pheno --out glm/cgwas_glm_scaling_{gwas_scaling}')
-        commands.append('# cgtex')
-        commands.append('plink2 --vcf cgtex.vcf --make-pgen --out cgtex')
-        commands.append(f'plink2 --pfile cgtex --maf 0.01 --glm hide-covar allow-no-covars --pheno cgtex_traits.scaling_{gtex_scaling}.pheno --out glm/cgtex_glm_scaling_{gtex_scaling}')
-    if run_hums:
-        commands.append('# hgwas')
-        commands.append('plink2 --vcf hgwas.vcf --make-pgen --out hgwas')
-        commands.append(f'plink2 --pfile hgwas --maf 0.01 --glm hide-covar allow-no-covars --pheno hgwas_traits.scaling_{gwas_scaling}.pheno --out glm/hgwas_glm_scaling_{gwas_scaling}')
-        commands.append('# hgtex')
-        commands.append('plink2 --vcf hgtex.vcf --make-pgen --out hgtex')
-        commands.append(f'plink2 --pfile hgtex --maf 0.01 --glm hide-covar allow-no-covars --pheno hgtex_traits.scaling_{gtex_scaling}.pheno --out glm/hgtex_glm_scaling_{gtex_scaling}')
-    command_string = '\n'.join(commands)
-    return command_string
+# get_commands() removed. It wrote a copy-paste shell crib to
+# gwas_scaling_*_gtex_*_maf_*.txt for a decommissioned qsub/muhee workflow:
+# hardcoded `plink2 --maf 0.01` (which no longer even tracks the config),
+# `--pca` steps that went away with create_pca(), and scp lines to a host
+# nobody uses. It documented what someone once typed, not what ran. The
+# stage2_params.txt written at the end of __main__ replaces it with an actual
+# record of the parameters used and the pool sizes they produced.
 
 def get_arguments():
     parser = argparse.ArgumentParser(description='Process some integers.')
@@ -499,7 +456,20 @@ def get_arguments():
     parser.add_argument('--deep_Q_scaling', type=float, required=False, default=None,
                         help='Q_scaling the pre-handoff (deep history) phase ran under; 1 '
                              'for the split-Q architecture. Required with --handoff_ticks.')
-    parser.add_argument('--min_maf', type=float, help='The minor allele frequency variants must reach to be tested')
+    parser.add_argument('--min_maf', type=float, help='The minor allele frequency variants must reach to be tested in the GWAS (the pipeline passes this same value to plink2 --maf in stage 5). Does NOT gate causative-variant eligibility -- see --causal_min_maf.')
+    parser.add_argument('--causal_min_maf', type=float, required=False, default=0.01,
+                        help='MAF floor a variant must clear to be ELIGIBLE AS CAUSATIVE: the '
+                             'central selected pool (in both the GWAS and the GTEx sample), the '
+                             'central neutral recipient pool under --neutral_trait_vars, and the '
+                             'flanking GTEx-only loci. Also names the output directory, since it '
+                             'is the only MAF floor that changes what this script produces. '
+                             'Independent of --min_maf (which gates the GWAS) and of the '
+                             "pipeline's fm_min_maf (which gates the SBAMS handed to DAP-G): set "
+                             'it below those two and the true causal variant falls out of the '
+                             'tested set, reachable only through a variant that tags it. Default '
+                             '0.01 = helpers.paths.LEGACY_CAUSAL_MIN_MAF, what every run through '
+                             'round 3 used -- deliberately not --min_maf, so a hand invocation '
+                             'cannot couple the two floors either.')
     parser.add_argument('--length', type=float, required=False, default=1e7, help='Genomic region length L (bp). Trait-associated variants are restricted to [5e5, L-5e5] (a 500 kb buffer from each edge). Default 1e7 reproduces the legacy hardcoded [5e5, 9.5e6] window.')
     parser.add_argument('--human_ts_file', type=str)
     parser.add_argument('--cattle_ts_file', type=str)
@@ -510,8 +480,8 @@ def get_arguments():
     parser.add_argument('--already_includes_neutral', type=str2bool, required=False, default=False, help='Only needed if you already added neutral mutations in the input data')
     parser.add_argument('--seed', type=int, default=19930224)
     parser.add_argument('--neutral_trait_vars', type=str2bool, required=False, default=False, help='Redistribute each non-zero effect size from its causal (selco != 0) donor variant to a random eligible neutral (selco == 0) recipient. Trait IDs are named for the recipient position. The redistribution is identical across GWAS and GTEx samples and is seeded by --seed.')
-    parser.add_argument('--n_central_traits', type=int, required=False, default=None, help='Number of central trait loci to keep -- these are the GWAS traits AND the shared GTEx traits (same positions). Drawn from the eligible causal pool (selco != 0, MAF >= min_maf, central [5e5, L-5e5] window). Randomly subsampled (seeded by --seed) when the pool is larger; all are used when fewer exist. Default None = use all eligible (legacy behavior).')
-    parser.add_argument('--n_flank_gtex_traits', type=int, required=False, default=50, help='Number of GTEx-ONLY trait loci drawn from the two 500 kb edge flanks ([0,5e5] U [L-5e5,L]) with the same causal eligibility (selco != 0, MAF >= min_maf in the GTEx sample). Added to the GTEx trait set on top of the shared central loci, so each GWAS locus can be compared to GTEx loci >=500 kb away. Randomly subsampled (seeded); uses all if fewer exist. Default 50; set 0 to disable.')
+    parser.add_argument('--n_central_traits', type=int, required=False, default=None, help='Number of central trait loci to keep -- these are the GWAS traits AND the shared GTEx traits (same positions). Drawn from the eligible causal pool (selco != 0, MAF >= --causal_min_maf, central [5e5, L-5e5] window). Randomly subsampled (seeded by --seed) when the pool is larger; all are used when fewer exist. Default None = use all eligible (legacy behavior).')
+    parser.add_argument('--n_flank_gtex_traits', type=int, required=False, default=50, help='Number of GTEx-ONLY trait loci drawn from the two 500 kb edge flanks ([0,5e5] U [L-5e5,L]) with the same causal eligibility (selco != 0, MAF >= --causal_min_maf in the GTEx sample). Added to the GTEx trait set on top of the shared central loci, so each GWAS locus can be compared to GTEx loci >=500 kb away. Randomly subsampled (seeded); uses all if fewer exist. Default 50; set 0 to disable.')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -521,6 +491,10 @@ if __name__ == '__main__':
     gtex_scaling = args.gtex_scaling
     r2_value = args.r2_value
     min_maf = args.min_maf
+    # The floor for causative-variant eligibility, and the one that names the
+    # output dir. min_maf is only passed through to the GWAS downstream; it has
+    # no effect on anything this script decides.
+    causal_min_maf = args.causal_min_maf
     gtex_size = args.gtex_size
 
     # Trait-associated (causal) variants are restricted to the central region,
@@ -683,37 +657,60 @@ if __name__ == '__main__':
                                        times_already_unscaled=True)
             print(f'Number of {name} vars: ' + str(len(data['vars'])))
 
-    # Select the relevant alleles
+    # Select the relevant alleles.
+    #
+    # Eligibility is MAF >= causal_min_maf in the GWAS sample AND in the GTEx
+    # sample, selco != 0, and a position inside the central window. Note the two
+    # MAF tests are applied in sequence, so the counts are logged after BOTH --
+    # the pool size is exactly the quantity that moves when causal_min_maf moves,
+    # so it must not be reported one filter early.
     print('Selecting relevant alleles')
+    pool_counts = {}
     if run_hums:
         hgtex_maf_dict = {var.position: var.maf for _, var in hgtex_vars.iterrows()}
-        hcausative_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] != 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
-        print(f'Number of causative human variants: {hcausative_maf01.shape[0]}')
-        hcausative_maf01 = hcausative_maf01[hcausative_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= min_maf, axis=1)]
+        hcausative_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= causal_min_maf) & (hgwas_vars['selco'] != 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
+        pool_counts['causal_eligible_gwas_sample'] = int(hcausative_maf01.shape[0])
+        hcausative_maf01 = hcausative_maf01[hcausative_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= causal_min_maf, axis=1)]
+        pool_counts['causal_eligible'] = int(hcausative_maf01.shape[0])
+        print(f'Number of causative human variants (selco != 0, MAF >= {causal_min_maf} in the '
+              f'GWAS sample): {pool_counts["causal_eligible_gwas_sample"]}; also >= '
+              f'{causal_min_maf} in the GTEx sample: {pool_counts["causal_eligible"]}')
     if run_cows:
         cgtex_maf_dict = {var.position: var.maf for _, var in cgtex_vars.iterrows()}
-        ccausative_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] != 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
-        print(f'Number of causative cattle variants: {ccausative_maf01.shape[0]}')
-        ccausative_maf01 = ccausative_maf01[ccausative_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
+        ccausative_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= causal_min_maf) & (cgwas_vars['selco'] != 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
+        pool_counts['causal_eligible_gwas_sample'] = int(ccausative_maf01.shape[0])
+        ccausative_maf01 = ccausative_maf01[ccausative_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= causal_min_maf, axis=1)]
+        pool_counts['causal_eligible'] = int(ccausative_maf01.shape[0])
+        print(f'Number of causative cattle variants (selco != 0, MAF >= {causal_min_maf} in the '
+              f'GWAS sample): {pool_counts["causal_eligible_gwas_sample"]}; also >= '
+              f'{causal_min_maf} in the GTEx sample: {pool_counts["causal_eligible"]}')
 
     # If --neutral_trait_vars is set, redistribute each non-zero effect from
     # its selco != 0 donor to a random selco == 0 recipient. Recipients are
     # filtered identically to donors (MAF in GWAS + position window + GTEx
-    # cross-check). With fewer recipients than donors, donors are randomly
-    # truncated (seeded by --seed) so the pairing stays one-to-one.
+    # cross-check) -- including the causal_min_maf floor, since in these
+    # categories the recipients ARE the causative variants. With fewer recipients
+    # than donors, donors are randomly truncated (seeded by --seed) so the pairing
+    # stays one-to-one.
     hredist = credist = None
     if args.neutral_trait_vars:
         if run_hums:
-            hneutral_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= min_maf) & (hgwas_vars['selco'] == 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
-            hneutral_maf01 = hneutral_maf01[hneutral_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= min_maf, axis=1)]
+            hneutral_maf01 = hgwas_vars.loc[(hgwas_vars['maf'] >= causal_min_maf) & (hgwas_vars['selco'] == 0) & (hgwas_vars['position'] > trait_pos_lo) & (hgwas_vars['position'] < trait_pos_hi) & (hgwas_vars.position.isin(hgtex_vars.position))]
+            hneutral_maf01 = hneutral_maf01[hneutral_maf01.apply(lambda row: hgtex_maf_dict[row.position] >= causal_min_maf, axis=1)]
             hkept, hredist = build_redistribution_map(hcausative_maf01['position'], hneutral_maf01['position'], seed=args.seed)
-            print(f'Human donors: {len(hcausative_maf01)}, neutral recipients: {len(hneutral_maf01)}, paired: {len(hkept)}')
+            print(f'Human donors: {len(hcausative_maf01)}, neutral recipients '
+                  f'(MAF >= {causal_min_maf}): {len(hneutral_maf01)}, paired: {len(hkept)}')
+            pool_counts['neutral_recipients'] = int(len(hneutral_maf01))
+            pool_counts['donors_paired'] = int(len(hkept))
             hcausative_maf01 = hcausative_maf01[hcausative_maf01['position'].astype(int).isin(hkept)]
         if run_cows:
-            cneutral_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= min_maf) & (cgwas_vars['selco'] == 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
-            cneutral_maf01 = cneutral_maf01[cneutral_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= min_maf, axis=1)]
+            cneutral_maf01 = cgwas_vars.loc[(cgwas_vars['maf'] >= causal_min_maf) & (cgwas_vars['selco'] == 0) & (cgwas_vars['position'] > trait_pos_lo) & (cgwas_vars['position'] < trait_pos_hi) & (cgwas_vars.position.isin(cgtex_vars.position))]
+            cneutral_maf01 = cneutral_maf01[cneutral_maf01.apply(lambda row: cgtex_maf_dict[row.position] >= causal_min_maf, axis=1)]
             ckept, credist = build_redistribution_map(ccausative_maf01['position'], cneutral_maf01['position'], seed=args.seed)
-            print(f'Cattle donors: {len(ccausative_maf01)}, neutral recipients: {len(cneutral_maf01)}, paired: {len(ckept)}')
+            print(f'Cattle donors: {len(ccausative_maf01)}, neutral recipients '
+                  f'(MAF >= {causal_min_maf}): {len(cneutral_maf01)}, paired: {len(ckept)}')
+            pool_counts['neutral_recipients'] = int(len(cneutral_maf01))
+            pool_counts['donors_paired'] = int(len(ckept))
             ccausative_maf01 = ccausative_maf01[ccausative_maf01['position'].astype(int).isin(ckept)]
 
     # Down-select trait loci.
@@ -727,18 +724,24 @@ if __name__ == '__main__':
     print('Selecting trait loci')
     if run_hums:
         hcausative_maf01 = subsample_traits(hcausative_maf01, args.n_central_traits, args.seed)
-        hflank_gtex = select_flank_gtex(hgtex_vars, min_maf, trait_pos_lo, trait_pos_hi,
+        hflank_gtex = select_flank_gtex(hgtex_vars, causal_min_maf, trait_pos_lo, trait_pos_hi,
                                         args.n_flank_gtex_traits, args.seed + 10**7)
         hgtex_trait_pos = pd.concat([hcausative_maf01, hflank_gtex])
         print(f'Human trait loci -- GWAS/central: {hcausative_maf01.shape[0]}, '
               f'GTEx flank: {hflank_gtex.shape[0]}, GTEx total: {hgtex_trait_pos.shape[0]}')
+        pool_counts.update(central_kept=int(hcausative_maf01.shape[0]),
+                           flank_kept=int(hflank_gtex.shape[0]),
+                           gtex_traits_total=int(hgtex_trait_pos.shape[0]))
     if run_cows:
         ccausative_maf01 = subsample_traits(ccausative_maf01, args.n_central_traits, args.seed + 2*10**7)
-        cflank_gtex = select_flank_gtex(cgtex_vars, min_maf, trait_pos_lo, trait_pos_hi,
+        cflank_gtex = select_flank_gtex(cgtex_vars, causal_min_maf, trait_pos_lo, trait_pos_hi,
                                         args.n_flank_gtex_traits, args.seed + 3*10**7)
         cgtex_trait_pos = pd.concat([ccausative_maf01, cflank_gtex])
         print(f'Cattle trait loci -- GWAS/central: {ccausative_maf01.shape[0]}, '
               f'GTEx flank: {cflank_gtex.shape[0]}, GTEx total: {cgtex_trait_pos.shape[0]}')
+        pool_counts.update(central_kept=int(ccausative_maf01.shape[0]),
+                           flank_kept=int(cflank_gtex.shape[0]),
+                           gtex_traits_total=int(cgtex_trait_pos.shape[0]))
 
     # Creating phenotypes
     print('Creating phenotypes')
@@ -762,16 +765,21 @@ if __name__ == '__main__':
 
     # Write everything out
     print('Writing everything out')
-    # sim_dir = f'/Users/noah/comparative_colocalization/data/simulations/gwas_and_eqtl_mapping/gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}'
-    sim_dir = f'{args.out_dir}/gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}'
+    # The maf_ component is causal_min_maf, NOT min_maf: it is the only one of the
+    # three MAF floors that changes what lands in this directory. Both are 0.01 in
+    # every config through round 3, so the name is unchanged for every run that
+    # already exists. helpers/paths.py:stage2_inner() mirrors this f-string and the
+    # two must not drift -- they are checked against each other in the Phase 0
+    # verification described in the plan for this change.
+    sim_dir = f'{args.out_dir}/gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}'
     if not os.path.exists(sim_dir):
         os.makedirs(sim_dir)
 
     if run_cows:
-        attach_beta(cgwas_vars, cgwas_key_maf01).to_csv(f'{sim_dir}/cgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        attach_beta(cgtex_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/cgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        cgwas_traits_maf01.to_csv(f'{sim_dir}/cgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        cgtex_traits_maf01.to_csv(f'{sim_dir}/cgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(cgwas_vars, cgwas_key_maf01).to_csv(f'{sim_dir}/cgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        attach_beta(cgtex_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/cgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        cgwas_traits_maf01.to_csv(f'{sim_dir}/cgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        cgtex_traits_maf01.to_csv(f'{sim_dir}/cgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
 
         with open (f'{sim_dir}/cgwas.vcf', 'w') as f:
             cgwas.write_vcf(f)
@@ -793,8 +801,8 @@ if __name__ == '__main__':
 
         for name, data in cgtex_subsamples.items():
             sub_ts, sub_traits, sub_vars = data['ts'], data['traits'], data['vars']
-            attach_beta(sub_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            attach_beta(sub_vars, cgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
             with open(f'{sim_dir}/{name}.vcf', 'w') as f:
                 sub_ts.write_vcf(f)
             write_ts_as_sbams(sub_ts, f'{sim_dir}/{name}_scaling_{gtex_scaling}_geno.sbams')
@@ -802,10 +810,10 @@ if __name__ == '__main__':
             sub_traits.to_csv(f'{sim_dir}/{name}_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
 
     if run_hums:
-        attach_beta(hgwas_vars, hgwas_key_maf01).to_csv(f'{sim_dir}/hgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        attach_beta(hgtex_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/hgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        hgwas_traits_maf01.to_csv(f'{sim_dir}/hgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-        hgtex_traits_maf01.to_csv(f'{sim_dir}/hgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+        attach_beta(hgwas_vars, hgwas_key_maf01).to_csv(f'{sim_dir}/hgwas_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        attach_beta(hgtex_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/hgtex_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        hgwas_traits_maf01.to_csv(f'{sim_dir}/hgwas_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+        hgtex_traits_maf01.to_csv(f'{sim_dir}/hgtex_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
 
         with gzip.open(f'{sim_dir}/hgwas.vcf.gz', 'wt') as f:
             hgwas.write_vcf(f)
@@ -826,17 +834,56 @@ if __name__ == '__main__':
 
         for name, data in hgtex_subsamples.items():
             sub_ts, sub_traits, sub_vars = data['ts'], data['traits'], data['vars']
-            attach_beta(sub_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
-            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.tsv', sep='\t', index=False)
+            attach_beta(sub_vars, hgtex_key_maf01).to_csv(f'{sim_dir}/{name}_vars_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
+            sub_traits.to_csv(f'{sim_dir}/{name}_traits_gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}.tsv', sep='\t', index=False)
             with gzip.open(f'{sim_dir}/{name}.vcf.gz', 'wt') as f:
                 sub_ts.write_vcf(f)
             write_ts_as_sbams(sub_ts, f'{sim_dir}/{name}_scaling_{gtex_scaling}_geno.sbams')
             write_traits_as_sbams(sub_traits, f'{sim_dir}/{name}_scaling_{gtex_scaling}_pheno.sbams')
             sub_traits.to_csv(f'{sim_dir}/{name}_traits.scaling_{gtex_scaling}.pheno', sep='\t', index=False)
 
-    # Write out a long string to the file sim_dir/gwas_scaling_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.txt
-    with open(f'{sim_dir}/gwas_scaling_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}.txt', 'w') as f:
-        f.write(get_commands(gwas_scaling, gtex_scaling, min_maf, sim_dir, run_hums, run_cows))
+    # Record what this stage-2 run actually used, and what it produced.
+    #
+    # Replaces the old gwas_scaling_*_gtex_*_maf_*.txt, which was a copy-paste crib
+    # for a decommissioned qsub/muhee workflow -- hardcoded `--maf 0.01`, plink
+    # --pca steps the pipeline no longer runs -- rather than a record of anything.
+    #
+    # This file travels with the directory when it is symlink-adopted into another
+    # output root, which is what lets the Snakefile verify that adopted phenotypes
+    # were built under the causal MAF floor the adopting run actually wants.
+    ts_file = args.human_ts_file if run_hums else args.cattle_ts_file
+    stage1 = {'file': os.path.basename(ts_file), 'path': ts_file}
+    try:
+        st = os.stat(ts_file)
+        stage1.update(size=st.st_size, mtime=int(st.st_mtime))
+    except OSError:
+        pass
+    # Keyed by CONFIG name rather than CLI name, so stage2_uid here and in the
+    # run-level record are computed over the same dict and can be compared.
+    params_record.write_stage2_params(
+        f'{sim_dir}/stage2_params.txt',
+        values={
+            'causal_min_maf': causal_min_maf,
+            'min_maf': min_maf,
+            'gwas_scaling': gwas_scaling,
+            'gtex_scaling': gtex_scaling,
+            'gtex_size': args.gtex_size,
+            'n_samples': args.n_samples,
+            'n_central_traits': args.n_central_traits,
+            'n_flank_gtex_traits': args.n_flank_gtex_traits,
+            'neutral_trait_vars': args.neutral_trait_vars,
+            'already_includes_neutral': args.already_includes_neutral,
+            'L': args.length,
+            'Q_scaling': q_scaling,
+            'handoff_ticks': args.handoff_ticks,
+            'deep_Q_scaling': args.deep_Q_scaling,
+            'stage2_seed': args.seed,
+            'species': 'human' if run_hums else 'cattle',
+        },
+        pools=pool_counts,
+        stage1=stage1,
+    )
+    print(f'Wrote {sim_dir}/stage2_params.txt')
 
 
 

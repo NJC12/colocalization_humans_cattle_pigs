@@ -162,6 +162,110 @@ pre-existing `revision_*.full.ts`. The `epoch_8.ts` checkpoint at
 is still found via `cattle_baseline_search_dirs`, and the SLiM job runs
 fresh from there for every submission.
 
+## The three MAF floors
+
+There are three independent MAF cutoffs. They are set separately, none is derived
+from another, and each governs exactly one thing:
+
+| Config key | Governs | Where it is applied | Default |
+|---|---|---|---|
+| `causal_min_maf` | Which variants may be **selected as causative** — central selected, central neutral (categories B/D), and flanking GTEx alike | `create_gwas_files_and_phenotypes.py`, stage 2 | `0.01` |
+| `fm_min_maf` | Which variants are **fine-mapped** (the SBAMS handed to DAP-G) | `stage3_index_geno`'s awk filter | `0` = no filter |
+| `min_maf` | Which variants enter the **GWAS** | `plink2 --maf`, stage 5 | required key |
+
+The interesting combination is a causal floor *below* the tested floors:
+
+```
+--config causal_min_maf=0.001 fm_min_maf=0.01     # min_maf stays 0.01
+```
+
+`causal_min_maf` is a **floor with no ceiling**, so this does not make the run
+unfindable — most of the MAF ≥ 0.001 pool is still above 0.01. It splits the loci:
+
+- causal MAF ≥ 0.01 → in the SBAMS and in the GLM, behaves exactly as at baseline;
+- causal MAF in [0.001, 0.01) → in neither tested set, findable only through a
+  common variant that tags it.
+
+`helpers/summarize_coloc.py` splits its rows on `causal_tested` accordingly, so the
+second group does not drag down the first. For a shared locus `causal_tested=True`
+means MAF ≥ `fm_min_maf` in **both** samples — the same test the baseline pool
+applies — so that subset is directly comparable to a baseline run.
+
+**Size the trait count for it.** `n_central_traits` is drawn from the *lowered* pool,
+so the tested subset is only `n_central_traits × P(MAF ≥ 0.01 | MAF ≥ 0.001)` loci.
+That fraction is far smaller for human than for bottlenecked cattle (88% of human
+variants in a ±250 kb window are below MAF 0.01, against cattle's 9% — see the
+comment in `rules/common.smk`), so at the usual `n_central_traits: 50` the human
+arm's `causal_tested=True` row rests on the fewest loci in exactly the comparison
+that matters. Raise `n_central_traits` for these arms to keep it near 50, or read
+the `replicates` and pool counts before trusting a small-n row.
+`submit_2Mb_r3_causal_maf.sh` launches the arms.
+
+`causal_min_maf` is the only one of the three that changes what stage 2 produces,
+so it is the one that appears in paths — and it appears in **two** places:
+
+```
+stage2/hts_11.cmaf_0.001/gwas_35_gtex_35_maf_0.001/   <- dir named for the causal floor
+stage3/hts_11.cmaf_0.001/hgwas/...                       (so search-dir adoption
+stage4/hts_11.cmaf_0.001/A1_human.hgtex.enloc.sig.out     cannot cross floors)
+stage5/hts_11.cmaf_0.001/hgwas_glm.*
+```
+
+The `.cmaf_<v>` segment comes from `stage2_run_tag()`, the single namespace for
+stages 2–5, and is **empty at 0.01** (`paths.LEGACY_CAUSAL_MIN_MAF`) so every path
+produced before this key existed is unchanged. It composes with `output_tag`
+rather than replacing it: `output_tag` still means "an analysis variant of one
+fixed stage-2 output" (r2, fine-mapping floor), which is why stage 5 remains
+tag-agnostic but does carry the causal segment.
+
+Two guards, both at parse time, before any job is submitted:
+
+- A stage-2 directory whose `stage2_params.txt` records a different
+  content-determining parameter is refused, naming the key and both values.
+- A stage-2 directory that predates `stage2_params.txt` is refused for any run
+  whose causal floor is not `0.01`, since its provenance cannot be verified.
+  At `0.01` it is silently accepted — that is what every existing run is.
+
+Unlike the fine-mapping variants, these arms **cannot** reuse stage 2
+(`stage2_search_dirs`), because the causal floor decides which variants become
+traits at all. Stage 1 is still shared, and must be, or the arms are not
+comparable.
+
+
+## Per-simulation parameters file
+
+Every real invocation writes the resolved config — after defaults and every
+`--config` override — to two identical files:
+
+```
+{workdir}/params/{run_tag}[.{output_tag}].params.txt      # from onstart, survives a dead DAG
+{stage4_dir}/{basename}[.{output_tag}].params.txt         # beside the outputs it describes
+```
+
+Mapping an output back to its parameters is textual: for any
+`{prefix}.{gtex_cat}.enloc.{kind}.out`, strip `.{gtex_cat}.enloc.{kind}.out` and
+append `.params.txt`. Uniqueness comes from the directory — `stage4_dir` embeds
+`run_tag` — not from `basename`, which is `human` in every round-3 config.
+
+Stage 2 additionally writes `{stage2_inner}/stage2_params.txt`, which records the
+resulting **pool sizes** as well as the parameters, and which travels with the
+directory when it is symlink-adopted into another output root. That is what the
+provenance guards above read.
+
+The format is a flat YAML mapping under a `.txt` extension: readable, `yaml.safe_load`-able,
+and re-feedable with `snakemake --configfile <params.txt>`. `_meta` carries host,
+timestamp, Snakemake version and the repo's git commit; `_derived` carries the
+computed paths, the file list this record describes, and two hashes — `stage2_uid`
+(over the stage-2-determining keys, so it can be checked against the stage-2
+sidecar after adoption) and `run_uid` (over those plus the analysis keys).
+
+Written at `onstart`, not as a rule output: it adds no job to the DAG, changes
+nothing for runs already complete, and correctly writes nothing under `-n`. Same
+reasoning as the `.fmmaf` sidecar. Two runs that share an `output_tag` but differ
+in an analysis parameter are caught here too — the older record is archived to
+`.params.<timestamp>.txt` with a warning, or raises with `params_strict: true`.
+
+
 ## Per-stage seeds
 
 Each config has `stage{1..5}_seed`.
@@ -247,6 +351,8 @@ simulations/
     paths.py                        # canonical filename builders
     search_dirs.py                  # multi-directory lookup with seed-mismatch check
     alias.py                        # legacy-filename -> canonical symlinks
+    params_record.py                # per-simulation parameters files + provenance
+    summarize_coloc.py              # cross-cell colocalization summary table
   scripts/
     dapg_one_locus.sh               # per-trait DAP-G runner (stage 3 fan-out)
     run_fastenloc.sh                # stage 4 wrapper
@@ -321,6 +427,18 @@ without `##fileformat=…` headers). Override by setting
 - **Stage-3/4/5 search-dir reuse**: only stage 1 and stage 2 read search dirs.
   Stages 3-5 always regenerate (cgwas dap-g is by far the most expensive part,
   so this matters if you ever want to reuse it -- not currently supported).
+- **Crediting a tagging variant**: `summarize_coloc.py` scores a true positive by
+  the *identity* of the causal variant, so an individual locus whose causal variant
+  fell below `fm_min_maf` can only ever report 0% TP. Those loci are isolated on
+  their own `causal_tested=False` rows, which makes the table legible, but nothing
+  yet credits a credible set for containing a variant that merely tags the truth.
+  A window match (against `dapg_window`) or an LD match (r2 from the stage-2 VCF,
+  which still holds the causal variant) would need new code.
+- **`fetch_big_results_2Mb.sh` and causal-MAF arms**: it pins
+  `SUB=stage2/*/gwas_35_gtex_35_maf_0.01` and rsyncs flat into `$LOCAL/$CAT/$ID/`,
+  so it will not match a `maf_0.001` directory -- and widening the glob would
+  flatten two arms into one local directory. Parameterise it per output root
+  before fetching a causal-MAF run.
 
 
 ## Submitting on O2 issues

@@ -17,7 +17,7 @@ import sys
 SIM_REPO_DIR = os.path.dirname(os.path.abspath(workflow.snakefile))
 sys.path.insert(0, SIM_REPO_DIR)
 
-from helpers import paths, search_dirs
+from helpers import params_record, paths, search_dirs
 
 
 # ---------- config validation + defaults ----------
@@ -56,6 +56,23 @@ if config["pipeline"] == "cattle_baseline_from_midpoint":
 # Defaults
 config.setdefault("already_includes_neutral", True)
 config.setdefault("neutral_trait_vars", False)
+# MAF floor a variant must clear to be eligible as CAUSATIVE: the central
+# selected pool, the central neutral recipient pool used under
+# neutral_trait_vars, and the flanking GTEx-only loci.
+#
+# This is one of three independent MAF floors, and it is the only one that
+# touches stage-2 content:
+#   causal_min_maf  which variants may be selected as causative      (stage 2)
+#   fm_min_maf      which variants are fine-mapped (the DAP-G SBAMS) (stage 3)
+#   min_maf         which variants enter the GWAS (plink2 --maf)     (stage 5)
+# They are set separately. Note the default is the literal historical value, NOT
+# config["min_maf"] -- defaulting one floor to another would couple two knobs
+# that are meant to move independently.
+config.setdefault("causal_min_maf", paths.LEGACY_CAUSAL_MIN_MAF)
+if not (0 < float(config["causal_min_maf"]) <= 0.5):
+    raise ValueError(
+        f"causal_min_maf must be in (0, 0.5], got {config['causal_min_maf']!r}"
+    )
 config.setdefault("ld_ctrl", 0.75)
 config.setdefault("dapg_window", 1_000_000)
 config.setdefault("fastenloc_total_snps", "auto")
@@ -182,6 +199,48 @@ if not _stage2_adopted:
         _stage2_adopted = True
         break
 
+if (not _stage2_adopted and paths.causal_maf_segment(config)
+        and (config.get("stage2_search_dirs") or [])):
+    # Not an error: the search dirs are named `gwas_G_gtex_T_maf_<causal floor>`,
+    # so a baseline dir simply does not match a run that wants a different causal
+    # pool -- which is the correct outcome, since the phenotypes differ. Say so,
+    # or "stage 2 is re-running" looks like a bug.
+    print(f"[stage2] no search dir matches {os.path.basename(paths.stage2_inner(config))} "
+          f"(causal_min_maf={config['causal_min_maf']}); stage 2 will re-run, as it must -- "
+          f"the trait set and phenotypes depend on that floor.")
+
+
+# 2b) Stage-2 provenance guard.
+#
+# The adoption block above matches on the stage-2 directory's basename, which
+# carries causal_min_maf, so it cannot hand this run phenotypes built under a
+# different causal floor. What it cannot rule out is a stage-2 directory that
+# already sits at the canonical location -- adopted earlier, or left by a prior
+# run of this same workdir -- whose parameters have since changed underneath it.
+# stage2_params.txt is the oracle: compare it against what is being asked for.
+
+if os.path.exists(paths.stage2_marker(config)):
+    _s2_params = paths.stage2_params_file(config)
+    if os.path.exists(_s2_params):
+        _bad = params_record.stage2_disagreements(config, _s2_params)
+        if _bad:
+            raise ValueError(
+                "The completed stage-2 output at "
+                f"{paths.stage2_inner(config)} was produced with different "
+                "content-determining parameters:\n"
+                + "\n".join(f"  {k}: on disk {d!r} != requested {r!r}" for k, d, r in _bad)
+                + "\nUse a distinct workdir (the convention in "
+                  "submit_2Mb_r3_multipliers.sh) or delete that stage-2 directory."
+            )
+    elif paths.causal_maf_segment(config):
+        raise ValueError(
+            f"{paths.stage2_inner(config)} predates stage2_params.txt, so the causal "
+            f"MAF floor its phenotypes were built under cannot be verified -- and this "
+            f"run sets causal_min_maf={config['causal_min_maf']}, which is not the "
+            f"{paths.LEGACY_CAUSAL_MIN_MAF} every run before that file used. Refusing to "
+            f"reuse it: delete that stage-2 directory, or point workdir somewhere fresh."
+        )
+
 
 # 3) Per-stage output adoption from previous workdirs (stages 3-5; stage 2 is
 #    handled by the more permissive all-or-nothing block above). For each entry
@@ -254,6 +313,25 @@ elif config["pipeline"] == "cattle_sel":
     include: "rules/stage1_cattle_sel.smk"
 
 include: "rules/common.smk"
+
+
+# ---------- per-simulation parameters record ----------
+#
+# Written at onstart rather than as a rule output. onstart fires once per real
+# invocation (including `--until stage2` and the stage-5-only controller), adds no
+# job to the DAG, changes nothing for the runs already complete on disk, and
+# correctly writes nothing under -n. A declared output would instead append a
+# pending job to every existing run. Same reasoning as the .fmmaf sidecar in
+# rules/common.smk, which is deliberately undeclared so prior runs stay adoptable.
+
+onstart:
+    try:
+        for _p in params_record.write_run_params(
+                config, argv=sys.argv, strict=config.get("params_strict", False)):
+            print(f"[params] wrote {_p}")
+    except Exception as e:
+        # A provenance file must never be the thing that kills a pipeline.
+        print(f"[params] WARNING: could not write params file: {e}")
 
 
 # ---------- top-level target ----------

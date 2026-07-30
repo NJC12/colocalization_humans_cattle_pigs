@@ -6,11 +6,58 @@ common rules. The convention:
     {basename}_{stagetag}_sd{seed}.{ext}
 
 with stage-2 outputs additionally namespaced under
-``gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{min_maf}/`` (this layout is
+``gwas_{gwas_scaling}_gtex_{gtex_scaling}_maf_{causal_min_maf}/`` (this layout is
 hardcoded in ``create_gwas_files_and_phenotypes.py`` and we mirror it).
+
+Note which MAF floor appears in that name. There are three independent ones, and
+each governs exactly one thing:
+
+    causal_min_maf  which variants may be selected as CAUSATIVE (stage 2)
+    fm_min_maf      which variants are FINE-MAPPED (the SBAMS DAP-G reads, stage 3)
+    min_maf         which variants enter the GWAS (``plink2 --maf``, stage 5)
+
+They are set separately and none is derived from another. Only ``causal_min_maf``
+determines stage-2 content -- the trait set and the phenotypes -- so it is the one
+in the stage-2 directory name, and it is also what ``stage2_run_tag`` carries so
+stages 3-5 separate too.
 """
 
 import os
+
+
+# ---------- causal-variant MAF floor ----------
+
+# Every simulation output that exists on disk was produced at
+# causal_min_maf == 0.01, and those paths must stay reachable, so that one
+# historical value emits no path segment. This is a fact about what is already
+# on disk, NOT a relationship between causal_min_maf and min_maf -- the two are
+# independent knobs and are never compared. Snakefile's setdefault reads this
+# constant too, so the literal lives in exactly one place.
+LEGACY_CAUSAL_MIN_MAF = 0.01
+
+
+def causal_min_maf(cfg):
+    """MAF floor a variant must clear to be eligible as causative.
+
+    Governs the central selected pool, the central neutral recipient pool used
+    under ``neutral_trait_vars`` (categories B/D), and the flanking GTEx-only
+    loci. Independent of ``min_maf`` and ``fm_min_maf``; see the module
+    docstring.
+    """
+    return cfg.get("causal_min_maf", LEGACY_CAUSAL_MIN_MAF)
+
+
+def causal_maf_segment(cfg):
+    """Path segment marking a non-historical causal MAF floor, else ``""``.
+
+    Appended to ``stage2_run_tag`` so that stages 3, 4 and 5 -- which are
+    otherwise namespaced by the stage-1 filename alone -- separate between runs
+    that drew their causal variants from different pools. Empty at
+    ``LEGACY_CAUSAL_MIN_MAF``, which keeps every pre-existing path unchanged.
+    """
+    if float(causal_min_maf(cfg)) == LEGACY_CAUSAL_MIN_MAF:
+        return ""
+    return f".cmaf_{causal_min_maf(cfg)}"
 
 
 # ---------- output tag (for parallel result sets, e.g. r2=0.25 vs r2=0.75) ----------
@@ -173,8 +220,16 @@ def stage1_dir(cfg):
 
 def stage2_run_tag(cfg):
     """Per-run tag that pins stage-2 outputs to the upstream stage-1 file
-    (so changing stage1_seed gets a fresh stage-2 dir)."""
-    return os.path.splitext(os.path.splitext(stage1_full_filename(cfg))[0])[0]
+    (so changing stage1_seed gets a fresh stage-2 dir), plus the causal MAF
+    floor when it is not the historical 0.01.
+
+    This is the sole namespace for stage2_dir, stage3_dir, stage4_dir and
+    stage5_dir, and for the ``previous_workdirs`` adoption in the Snakefile, so
+    appending causal_maf_segment() here separates the whole downstream tree at
+    once -- including ``geno.sbams.gz``, the file every DAP-G job reads.
+    """
+    base = os.path.splitext(os.path.splitext(stage1_full_filename(cfg))[0])[0]
+    return base + causal_maf_segment(cfg)
 
 
 def stage2_dir(cfg):
@@ -184,11 +239,22 @@ def stage2_dir(cfg):
 
 def stage2_inner(cfg):
     """The directory that ``create_gwas_files_and_phenotypes.py`` actually
-    writes to (one level deeper, matching its hardcoded layout)."""
+    writes to (one level deeper, matching its hardcoded layout).
+
+    The ``maf_`` component is causal_min_maf, NOT min_maf: it is the only one of
+    the three floors that determines what lives in this directory (the trait set
+    and the phenotypes). min_maf governs ``plink2 --maf`` in stage 5 and
+    fm_min_maf the SBAMS handed to DAP-G, and neither touches stage-2 content.
+    Both are 0.01 in every config through round 3, so this name is unchanged for
+    every run that already exists.
+
+    Naming it this way also means the all-or-nothing stage-2 adoption in the
+    Snakefile -- which matches on this directory's basename -- cannot hand a run
+    phenotypes that were built under a different causal floor.
+    """
     gw = cfg["gwas_scaling"]
     gt = cfg["gtex_scaling"]
-    maf = cfg["min_maf"]
-    return os.path.join(stage2_dir(cfg), f"gwas_{gw}_gtex_{gt}_maf_{maf}")
+    return os.path.join(stage2_dir(cfg), f"gwas_{gw}_gtex_{gt}_maf_{causal_min_maf(cfg)}")
 
 
 def stage2_marker(cfg):
@@ -431,3 +497,48 @@ def stage5_done_tmpl(cfg):
 
 def stage5_prefix_tmpl(cfg):
     return os.path.join(stage5_dir(cfg), "{cat}_glm")
+
+
+# ---------- per-simulation parameters record ----------
+#
+# Two copies of one file, written at Snakemake onstart by helpers/params_record.
+# Neither is a declared rule output -- same reasoning as the ``.fmmaf`` sidecar in
+# rules/common.smk: runs that predate the file must stay adoptable, and a
+# metadata file should not add a job to every existing DAG.
+
+def stage4_params_file(cfg):
+    """Beside the stage-4 outputs, sharing their prefix.
+
+    For any ``{prefix}.{gtex_cat}.enloc.{kind}.out``, strip
+    ``.{gtex_cat}.enloc.{kind}.out`` and append ``.params.txt`` to get this file.
+    Uniqueness comes from the directory: stage4_dir embeds stage2_run_tag (the
+    stage-1 filename, hence stage1_seed, plus the causal MAF segment).
+    ``basename`` alone is not unique -- every round-3 config says
+    ``basename: human``.
+    """
+    return os.path.join(
+        stage4_dir(cfg),
+        f"{cfg['basename']}.{_stage4_prefix_tag_segment(cfg)}params.txt",
+    )
+
+
+def workdir_params_file(cfg):
+    """Per-invocation copy at the workdir root, with identical content.
+
+    Exists as soon as Snakemake starts, so the record survives a DAG that dies
+    before stage 4 ever runs.
+    """
+    tag = output_tag(cfg)
+    stem = stage2_run_tag(cfg) + (f".{tag}" if tag else "")
+    return os.path.join(workdir(cfg), "params", f"{stem}.params.txt")
+
+
+def stage2_params_file(cfg):
+    """Sidecar written by create_gwas_files_and_phenotypes.py itself.
+
+    Records the stage-2 parameters actually used plus the resulting pool sizes.
+    Stage-2 directories are symlink-adopted across output roots, so this is the
+    only way an adopting run can know what the adopted phenotypes were -- and it
+    is the oracle for the Snakefile's stage-2 provenance guard.
+    """
+    return stage2_file(cfg, "stage2_params.txt")
