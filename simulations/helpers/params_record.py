@@ -59,6 +59,11 @@ SIM_REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # captures directly, by name and size, under `stage1`.
 STAGE2_KEYS = (
     "causal_min_maf",
+    "causal_sampling",
+    "sampling_gwas_n",
+    "sampling_sig_p",
+    "sampling_min_power",
+    "sampling_min_pool_multiple",
     "gwas_scaling",
     "gtex_scaling",
     "gtex_size",
@@ -66,6 +71,7 @@ STAGE2_KEYS = (
     "n_central_traits",
     "n_flank_gtex_traits",
     "neutral_trait_vars",
+    "synthetic_dfe_effects",
     "already_includes_neutral",
     "L",
     "Q_scaling",
@@ -211,6 +217,7 @@ def derived(cfg):
         "stage2_params_file": paths.stage2_params_file(cfg),
         "stage2_categories": list(paths.stage2_categories(cfg)),
         "causal_maf_segment": paths.causal_maf_segment(cfg) or "",
+        "causal_sampling_segment": paths.causal_sampling_segment(cfg) or "",
         "output_tag": paths.output_tag(cfg),
         "stage3_outputs_subdir": paths.stage3_outputs_subdir_name(cfg),
         "stage4_prefixes": {g: paths.stage4_prefix(cfg, g) for g in gtex_cats},

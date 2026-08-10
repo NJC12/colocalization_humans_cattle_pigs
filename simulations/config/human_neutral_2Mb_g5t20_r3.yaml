@@ -1,0 +1,93 @@
+# Neutral human simulation (category H), 2 Mb region. g5t20 asymmetric cell. ROUND 3.
+#
+# The OTHER neutral model. Category B keeps a genome produced by a forward run
+# UNDER selection and merely moves each donor's selection coefficient onto a
+# neutral recipient; here there is no selection anywhere in the tree sequence at
+# all -- stage 1 is a pure msprime coalescent under the same OutOfAfrica_2T12
+# demography category A uses -- and the causal variants' effect-size parameters
+# are DRAWN in stage 2 from the DFE with its neutral class removed
+# (helpers/synthetic_dfe.py, proportions 0.975/0.024/0.001 over m1/m2/m3).
+#
+# beta = sqrt(|s|) * the panel multiplier exactly as in A, so effect sizes are on
+# A's scale and the multiplier cells mean the same thing in both arms.
+#
+# Comparing H against A isolates "selection shaped the genealogy" (which H lacks
+# and A has) from "selection shaped which variants carry effects" (which B
+# isolates instead). Measured against A1 at this region size, H carries ~10% more
+# segregating sites and ~2x the nucleotide diversity: same mutational input,
+# no background selection removing linked variation.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, workdir, publishdir on
+# the command line. H is the 8th category letter, so H{N} -> seed 8{N}:
+# H1=81 ... H5=85. Stage 1 is cheap (a coalescent, ~3 s and <1 GB at this size),
+# so unlike the A multiplier cells there is nothing to gain from reusing it
+# across cells -- each replicate simulates its own.
+
+pipeline: human_neutral
+species: human
+basename: human_neutral
+species_prefix: h
+
+# ---- Demography parameters ----
+# No forward phase, so nothing is rescaled and nothing has to be un-rescaled.
+# get_vars_df divides selco by this; the drawn coefficients are already real.
+Q_scaling: 1
+# The one round-3 rate, shared with every other arm. Pinned rather than left to
+# stdpopsim's generic-contig default, which is 1.282e-8 for HomSap and would put
+# this arm on a different map from the one it is compared against.
+recombination_rate: 1.3e-8
+# Required for this pipeline, and it is the TOTAL rate of the selected arms
+# (SLiM applies the DFE at 5.6e-9 and msprime overlays neutral at 8.4e-9),
+# NOT the neutral component alone. Matching mutational input is what makes
+# H's variant density comparable to A's. See human_neutral_simulation.py.
+mutation_rate: 1.4e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 5
+gtex_scaling: 20
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False       # that is category B's model, not this one
+synthetic_dfe_effects: True     # category H: draw the effect-size parameter
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 81
+stage2_seed: 81
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/human_neutral
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/human_neutral
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default

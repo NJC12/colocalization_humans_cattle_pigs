@@ -1,0 +1,110 @@
+# Neutral cattle simulation (category I), 2 Mb region. ROUND 3 -- x30 CELL.
+#
+# The cattle counterpart of category H. There is no selection anywhere in the
+# tree sequence -- stage 1 is a pure msprime coalescent under the same twelve-epoch
+# Holstein-Friesian demography E/F/G run forward in SLiM -- and the causal
+# variants' effect-size parameters are DRAWN in stage 2 from the DFE with its
+# neutral class removed (helpers/synthetic_dfe.py, proportions 0.975/0.024/0.001
+# over m1/m2/m3).
+#
+# That DFE is the SAME one the human arms use: human_simulation_o2.py:67-92 and
+# farm_selection.slim:40-45 define identical components with identical
+# proportions. So H and I draw effect sizes from one distribution and differ in
+# exactly one thing -- the genealogy. Comparing them isolates the demography;
+# comparing I against E isolates "selection shaped the genealogy" on the cattle
+# side, the way H against A does on the human side.
+#
+# THE WHOLE HISTORY. E/F/G resume from the shared farm_selection ep7 checkpoint
+# because the burn-in and epochs 2-7 are unaffordable to re-run per replicate in
+# SLiM. A coalescent has no burn-in, so this arm simulates all twelve epochs
+# itself, including the full bottleneck from N=17,000 down to N=90. Hence no
+# cattle_baseline_seed and no cattle_baseline_search_dirs below: there is nothing
+# to hand off from.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, workdir, publishdir on
+# the command line. I is the 9th category letter, so I{N} -> seed 9{N}:
+# I1=91 ... I5=95. Stage 1 is cheap, so unlike E/F/G there is nothing to gain
+# from sharing it across replicates -- each simulates its own.
+
+pipeline: cattle_neutral
+species: cattle
+basename: cattle_neutral
+species_prefix: c
+
+# ---- Demography parameters ----
+# Not 1, and not because anything is simulated forward. Under the Hudson
+# coalescent, Q=0.01 in ticks and Q=1 in generations are the same distribution --
+# scaling every size and duration by 1/Q and every rate by Q leaves 4Nmu, 4Nr and
+# the coalescent integral unchanged, and the tree sequences are identical. What
+# the value states is which process this arm CLAIMS to approximate: E/F/G's
+# Wright-Fisher population of 9,000 whose entire membership is sampled. At Q=1
+# the same 9,000-individual sample would come from a population of 90.
+# get_vars_df multiplies the tree's tick times by this to recover generations,
+# and add_neutral divides its overlay rate by 1/this -- both correct here.
+Q_scaling: 0.01
+# The one round-3 rate, shared with every other arm.
+recombination_rate: 1.3e-8
+# Required for this pipeline, and for cattle it is the STAGE-1 COMPONENT, not the
+# total -- the opposite of what category H's config carries. The cattle arms put
+# 5.6e-9 on in SLiM and let create_gwas_files_and_phenotypes.py overlay 8.4e-9,
+# and that overlay runs unconditionally on the --cattle_ts_file branch, so
+# reproducing the split is what lands this arm on the same 1.4e-8 total as E/F/G
+# without changing shared stage-2 code. See cattle_neutral_simulation.py.
+mutation_rate: 5.6e-9
+L: 2000000
+dapg_window: 250000
+
+# ---- Sample sizes ----
+gwas_scaling: 30       # x30 variant (x35 run uses 35)
+gtex_scaling: 30       # x30 variant (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this arm's comparators ran under,
+# and it is also the one value that emits no path segment, so stage-2..5 outputs
+# stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False       # that is category B/D's model, not this one
+synthetic_dfe_effects: True     # category I: draw the effect-size parameter
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 91
+stage2_seed: 91
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+# Inert on the cattle branch -- add_neutral runs there whether or not this is set,
+# which is exactly why mutation_rate above is the 5.6e-9 component. Kept at the
+# same value every other cattle config carries so nothing reads a difference into
+# its absence.
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_x30/cattle_neutral
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_x30/cattle_neutral
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+# NO handoff_ticks / deep_Q_scaling. Those exist for E/F/G, whose tree sequences
+# span the Q=1 -> Q=0.01 deep-history handoff and therefore carry a piecewise time
+# scale. This one is a single coalescent at a single Q, so both the neutral
+# overlay and the time column take one factor throughout -- which is what stage 2
+# does when the keys are absent.

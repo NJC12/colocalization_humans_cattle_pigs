@@ -17,7 +17,7 @@ import sys
 SIM_REPO_DIR = os.path.dirname(os.path.abspath(workflow.snakefile))
 sys.path.insert(0, SIM_REPO_DIR)
 
-from helpers import params_record, paths, search_dirs
+from helpers import cattle_demography, params_record, paths, search_dirs
 
 
 # ---------- config validation + defaults ----------
@@ -38,8 +38,34 @@ for k in REQUIRED_KEYS:
     if k not in config:
         raise ValueError(f"Missing required config key: {k}")
 
-if config["pipeline"] not in {"human", "cattle_baseline", "cattle_baseline_from_midpoint", "cattle_sel"}:
+if config["pipeline"] not in {"human", "human_neutral", "cattle_baseline",
+                              "cattle_baseline_from_midpoint", "cattle_sel",
+                              "cattle_neutral"}:
     raise ValueError(f"Unknown pipeline: {config['pipeline']!r}")
+
+if config["pipeline"] in {"human_neutral", "cattle_neutral"}:
+    # No setdefault, same reasoning as recombination_rate above: the selected arms
+    # split their 1.4e-8 into a DFE-applied 5.6e-9 and a neutral 8.4e-9 overlay,
+    # and which of the three numbers a neutral arm uses decides whether its variant
+    # density matches theirs. A silent default would make that invisible.
+    #
+    # The right number differs by species, because the two families put the split
+    # in different places. The human arms apply BOTH halves in stage 1, so
+    # human_neutral must ask for the 1.4e-8 total. The cattle arms apply 5.6e-9 in
+    # SLiM and let create_gwas_files_and_phenotypes.py overlay 8.4e-9 -- and that
+    # overlay runs unconditionally on the --cattle_ts_file branch -- so
+    # cattle_neutral must ask for 5.6e-9 and let stage 2 finish the job. Passing
+    # one arm's number to the other silently mis-sets variant density by 2.5x.
+    if "mutation_rate" not in config:
+        expected = ("the TOTAL rate of the arm being compared against, 1.4e-8, not its "
+                    "neutral component"
+                    if config["pipeline"] == "human_neutral" else
+                    "the STAGE-1 component only, 5.6e-9; stage 2's add_neutral overlays "
+                    "the remaining 8.4e-9 on the cattle branch")
+        raise ValueError(
+            f"{config['pipeline']} pipeline requires config key: mutation_rate "
+            f"({expected})"
+        )
 
 if config["pipeline"] == "cattle_sel":
     for k in ("selection_multiplier", "selected_generations", "num_muts_selected",
@@ -56,6 +82,16 @@ if config["pipeline"] == "cattle_baseline_from_midpoint":
 # Defaults
 config.setdefault("already_includes_neutral", True)
 config.setdefault("neutral_trait_vars", False)
+# Categories H and I (pipelines human_neutral / cattle_neutral). The two neutral
+# models are not composable -- see create_gwas_files_and_phenotypes.py, which
+# rejects the combination -- so catch it here rather than after stage 1 has run.
+config.setdefault("synthetic_dfe_effects", False)
+if config["synthetic_dfe_effects"] and config["neutral_trait_vars"]:
+    raise ValueError(
+        "synthetic_dfe_effects and neutral_trait_vars are mutually exclusive: they are "
+        "two different neutral models. Categories H and I set the former; B and D set "
+        "the latter."
+    )
 # MAF floor a variant must clear to be eligible as CAUSATIVE: the central
 # selected pool, the central neutral recipient pool used under
 # neutral_trait_vars, and the flanking GTEx-only loci.
@@ -65,14 +101,69 @@ config.setdefault("neutral_trait_vars", False)
 #   causal_min_maf  which variants may be selected as causative      (stage 2)
 #   fm_min_maf      which variants are fine-mapped (the DAP-G SBAMS) (stage 3)
 #   min_maf         which variants enter the GWAS (plink2 --maf)     (stage 5)
-# They are set separately. Note the default is the literal historical value, NOT
-# config["min_maf"] -- defaulting one floor to another would couple two knobs
-# that are meant to move independently.
-config.setdefault("causal_min_maf", paths.LEGACY_CAUSAL_MIN_MAF)
-if not (0 < float(config["causal_min_maf"]) <= 0.5):
+# They are set separately. Note the default is NOT config["min_maf"] --
+# defaulting one floor to another would couple two knobs that are meant to move
+# independently.
+#
+# The default is 0 (no floor), and the floor applies in BOTH sampling schemes
+# whenever it is set. It used to default to 0.01 and to be ignored by the central
+# pool under causal_sampling=power. Every config in config/ pins the value
+# explicitly so that change is inert for them; a hand-rolled --config invocation
+# that omits the key now gets 0 rather than 0.01.
+config.setdefault("causal_min_maf", paths.DEFAULT_CAUSAL_MIN_MAF)
+if not (0 <= float(config["causal_min_maf"]) <= 0.5):
     raise ValueError(
-        f"causal_min_maf must be in (0, 0.5], got {config['causal_min_maf']!r}"
+        f"causal_min_maf must be in [0, 0.5], got {config['causal_min_maf']!r}"
     )
+
+# How the central causal loci are drawn. "uniform" is the historical scheme (a
+# uniform draw from the causal_min_maf-eligible pool) and emits no path segment;
+# "power" weights every central selco != 0 variant by its probability of being
+# detected in a GWAS of sampling_gwas_n individuals and draws with inclusion
+# probability proportional to that power (helpers/causal_power.py).
+#
+# causal_min_maf gates the central pool under both schemes (it did not always --
+# "power" used to drop the floor there on the grounds that the weight subsumed
+# it), so the two keys compose rather than one shadowing the other.
+config.setdefault("causal_sampling", paths.LEGACY_CAUSAL_SAMPLING)
+if config["causal_sampling"] not in {"uniform", "power"}:
+    raise ValueError(
+        f"causal_sampling must be 'uniform' or 'power', got {config['causal_sampling']!r}"
+    )
+# Defaults to the config's own GWAS size, so the weight describes the GWAS this run
+# actually simulates unless deliberately told otherwise. Set it higher to ask "which
+# loci would a larger study find?" -- that shifts the causal set toward rarer,
+# smaller-effect variants without changing the simulated GWAS itself.
+config.setdefault("sampling_gwas_n", config["gwas_size"])
+if float(config["sampling_gwas_n"]) <= 0:
+    raise ValueError(f"sampling_gwas_n must be positive, got {config['sampling_gwas_n']!r}")
+# Genome-wide significance, matching GWAS_SIG_P in figure2_revision2.ipynb so the
+# sampling weight and the notebook's "GWAS-findable" filter use one rule.
+config.setdefault("sampling_sig_p", 5e-8)
+if not (0 < float(config["sampling_sig_p"]) < 1):
+    raise ValueError(f"sampling_sig_p must be in (0, 1), got {config['sampling_sig_p']!r}")
+# Sanity guard on the draw: refuse to run unless at least
+# sampling_min_pool_multiple * n_central_traits pool variants reach
+# sampling_min_power. A pool with only a handful of detectable variants yields a
+# "weighted" sample that is really those few plus an arbitrary tail.
+config.setdefault("sampling_min_power", 0.05)
+if not (0 < float(config["sampling_min_power"]) < 1):
+    raise ValueError(
+        f"sampling_min_power must be in (0, 1), got {config['sampling_min_power']!r}"
+    )
+config.setdefault("sampling_min_pool_multiple", 2)
+if float(config["sampling_min_pool_multiple"]) < 1:
+    raise ValueError(
+        "sampling_min_pool_multiple must be >= 1, got "
+        f"{config['sampling_min_pool_multiple']!r}"
+    )
+if config["causal_sampling"] == "power" and not config.get("n_central_traits"):
+    raise ValueError(
+        "causal_sampling: power requires an explicit n_central_traits -- its pool is "
+        "every central selco != 0 variant (no MAF floor), so 'use all eligible' would "
+        "make every one of them causative."
+    )
+
 config.setdefault("ld_ctrl", 0.75)
 config.setdefault("dapg_window", 1_000_000)
 config.setdefault("fastenloc_total_snps", "auto")
@@ -305,12 +396,16 @@ _adopt_prior_outputs()
 
 if config["pipeline"] == "human":
     include: "rules/stage1_human.smk"
+elif config["pipeline"] == "human_neutral":
+    include: "rules/stage1_human_neutral.smk"
 elif config["pipeline"] == "cattle_baseline":
     include: "rules/stage1_cattle_baseline.smk"
 elif config["pipeline"] == "cattle_baseline_from_midpoint":
     include: "rules/stage1_cattle_baseline_from_midpoint.smk"
 elif config["pipeline"] == "cattle_sel":
     include: "rules/stage1_cattle_sel.smk"
+elif config["pipeline"] == "cattle_neutral":
+    include: "rules/stage1_cattle_neutral.smk"
 
 include: "rules/common.smk"
 

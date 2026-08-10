@@ -33,7 +33,7 @@ set -euo pipefail
 REPO=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake
 SNAKEMAKE=/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake
 
-: "${CONFIGFILE:?}" "${SEED:?}" "${WD:?}" "${PD:?}" "${STAGE1_SRC:?}"
+: "${CONFIGFILE:?}" "${SEED:?}" "${WD:?}" "${PD:?}"
 # Optional extra --config tokens (e.g. "neutral_trait_vars=True" for category B).
 # Intentionally unquoted on the snakemake lines so multiple space-separated
 # key=value pairs expand as separate args.
@@ -43,7 +43,18 @@ EXTRA_CONFIG="${EXTRA_CONFIG:-}"
 # search-dir lookup is seed-strict, so STAGE1_SRC must be THIS replicate's own
 # A{N}/stage1 dir (submit_2Mb_x10.sh guarantees that). Passed as a single quoted
 # --config token; Snakemake YAML-parses the value into a one-element list.
-STAGE1_CFG="stage1_search_dirs=['$STAGE1_SRC']"
+#
+# EMPTY means "build stage 1 here". It used to be mandatory (`${STAGE1_SRC:?}`),
+# which was right while every caller was a multiplier cell reusing an x35 run.
+# Category H has no x35 predecessor to reuse -- it is a different stage-1
+# pipeline, and a coalescent cheap enough that reuse buys nothing -- so the
+# variable is now optional and the search-dir token is omitted when it is unset.
+STAGE1_SRC="${STAGE1_SRC:-}"
+if [[ -n "$STAGE1_SRC" ]]; then
+    STAGE1_CFG="stage1_search_dirs=['$STAGE1_SRC']"
+else
+    STAGE1_CFG="stage1_search_dirs=[]"
+fi
 
 mkdir -p "$WD"
 

@@ -1,0 +1,102 @@
+# Cattle baseline replicate (category E), 2 Mb region -- x30 PHENOTYPE-SCALING
+# VARIANT. ROUND 3.
+#
+# Identical to cattle_baseline_from_midpoint_2Mb_r3.yaml EXCEPT the phenotype
+# scaling multipliers are 30 instead of 35 (gwas_scaling / gtex_scaling below).
+# The trait effect size is  beta = sqrt(|selection_coeff|) * scaling
+# (create_gwas_files_and_phenotypes.py), so this rescales every phenotype by
+# 30/35 relative to the x35 run while leaving the genetics untouched.
+#
+# Stage 1 (the genetic simulation) is NOT rerun: each replicate reuses the
+# existing round-3 x35 .full.ts via stage1_search_dirs, passed PER REPLICATE on
+# the command line by submit_2Mb_r3_multipliers.sh (it points at that replicate's
+# own E{N}/stage1 dir only -- the lookup is seed-strict on stage1_seed). When the
+# .full.ts is found, the stage-1 rule short-circuits to a symlink and never runs
+# farm_selection_from_ep8.slim, so cattle_baseline_search_dirs below is not
+# consulted. Only stages 2-5 rerun.
+#
+# handoff_ticks / deep_Q_scaling are RETAINED: the reused tree sequence still has
+# the split-Q piecewise time scale, so stage 2's neutral overlay and time-column
+# conversion must still be applied in two segments.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, stage1_search_dirs,
+# workdir, publishdir on the command line (E{N} -> seed 5{N}: E1=51 ... E10=60).
+# Outputs land under a separate ..._2Mb_x30 root so x35 and x30 sit side by side.
+
+pipeline: cattle_baseline_from_midpoint
+species: cattle
+basename: cattle_baseline_from_midpoint
+species_prefix: c
+
+# ---- Demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+
+# ---- Sample sizes ----
+gwas_scaling: 30       # x30 variant (x35 run uses 35)
+gtex_scaling: 30       # x30 variant (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds ----
+# cattle_baseline_seed identifies the shared 2 Mb baseline whose epoch_8.ts we
+# load; it is the same for all 8 replicates. stage1_seed is THIS replicate's
+# continuation seed (overridden per replicate on the command line).
+cattle_baseline_seed: 20250303
+stage1_seed: 51
+stage2_seed: 51
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Point at the shared 2 Mb baseline's stage1 dir (where its epoch_8.ts lives).
+cattle_baseline_search_dirs: 
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline/stage1
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the
+# round-3 x35 stage1 dir so stage 1 is reused, not rerun). Leave empty here.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_x30/cattle_baseline_from_midpoint
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_x30/cattle_baseline_from_midpoint
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+# Split-Q handoff: epochs 8-12 = 600+600+600+300+300 = 2400 ticks at
+# Q_scaling=0.01; everything older ran at Q=1.
+handoff_ticks: 2400
+deep_Q_scaling: 1

@@ -1,4 +1,4 @@
-# Category F: cattle + positive selection on 26 trait variants, WITH continued
+# Category F: cattle + positive selection on 5 trait variants, WITH continued
 # bottlenecking through the late epochs. 2 Mb region. Continues from the shared
 # 2 Mb epoch_8 checkpoint (same one E consumes) via farm_selection_from_ep8.slim
 # with num_muts_selected>0. Per-replicate config: submit 10x, overriding
@@ -23,13 +23,24 @@ recombination_rate: 1.3e-8
 L: 2000000
 selection_multiplier: 100
 selected_generations: 23
-num_muts_selected: 26
+# 5, NOT the 26 that rounds 1 and 2 used. 26 was chosen for the 10 Mb region and
+# was carried onto 2 Mb unchanged, which is ~5x the intended density of
+# positively-selected variants per Mb. 26 * (2/10) = 5.2 -> 5 restores it.
+# This DOES break comparability with round-1/2 F and G -- deliberately. Note the
+# value is embedded in the stage-1 filename (..._muts5_...), so a muts5 run can
+# never adopt or collide with a muts26 tree sequence.
+num_muts_selected: 5
 continue_bottlenecking: 1
 
 # ---- Sample sizes ----
 gwas_scaling: 35
 gtex_scaling: 35
 min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
 gwas_size: 8000
 gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
 

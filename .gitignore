@@ -3,3 +3,5 @@
 */*/_*
 notebook/
 simulation_data/
+__pycache__/
+*.pyc

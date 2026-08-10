@@ -44,6 +44,17 @@ def _stage1_cattle_sel_inputs(wc):
     }
 
 
+# Attempt-scaled because both numbers are guesses -- see the note in the rule's
+# resources block. Named functions rather than lambdas, matching _dapg_runtime /
+# _dapg_mem_mb in common.smk.
+def _stage1_cattle_sel_runtime(wc, attempt):
+    return 2 * 60 * attempt        # 2 h -> 4 h -> 6 h; `short` caps at 12 h
+
+
+def _stage1_cattle_sel_mem_mb(wc, attempt):
+    return 8000 * attempt          # 8 -> 16 -> 24 GB
+
+
 rule stage1_cattle_sel:
     output:
         full  = paths.stage1_dir(config) + "/" + paths.stage1_cattle_sel_full(config),
@@ -74,9 +85,17 @@ rule stage1_cattle_sel:
         # mutations should not change that much, but G in particular behaved
         # very differently from E in round 2 (see _dapg_mem_mb_base). Tighten
         # once F/G have actually run.
+        #
+        # ATTEMPT-SCALED because both numbers are guesses. They were static, so a
+        # G stage-1 that wanted 9 GB would fail identically on all three attempts
+        # (--restart-times is 2) and take the replicate down with it. G is the
+        # unmeasured case: continue_bottlenecking=0 leaves a ~100k population, an
+        # order of magnitude more individuals than E/F carry through epochs 8-12.
+        # Scaling to 16/24 GB and 4/6 h makes a wrong first guess recoverable
+        # instead of fatal. `short` caps at 12 h, so attempt 3 still fits.
         slurm_partition = "short",
-        runtime = 2 * 60,
-        mem_mb  = 8000,
+        runtime = _stage1_cattle_sel_runtime,
+        mem_mb  = _stage1_cattle_sel_mem_mb,
         cpus_per_task = 4,
     conda: "../envs/coloc_sims.yaml"
     shell:

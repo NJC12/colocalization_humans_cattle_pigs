@@ -147,7 +147,14 @@ def _parse_params(text):
     return out
 
 DEMOGRAPHY = {"A": "human", "B": "human", "C": "human", "D": "human",
-              "E": "cattle", "F": "cattle", "G": "cattle"}
+              "E": "cattle", "F": "cattle", "G": "cattle",
+              # H and I: neutral GENEALOGY (a pure coalescent, no selection in
+              # stage 1 at all) with effect sizes drawn from the truncated DFE --
+              # H under the human demography, I under the cattle one. They draw
+              # from the SAME distribution, so H-vs-I isolates the demography.
+              # B is the other neutral model -- a genome shaped by selection, with
+              # the effects moved onto neutral variants. Keep them apart.
+              "H": "human", "I": "cattle"}
 
 COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
            "causal_min_maf", "n_gwas_traits", "n_causal_tested",
@@ -502,6 +509,43 @@ def causal_maf_by_trait(stage2_dir, cat):
     return out
 
 
+def shared_partner_by_trait(stage2_dir, gwas_cat):
+    """{gwas trait id: True if a GTEx trait was defined at the SAME causal variant}.
+
+    Read from the `{cat}_trait_partners_*.tsv` sidecar stage 2 writes. Without it
+    the pairing has to be inferred from trait-name equality, which cannot tell
+    "this GWAS locus has no eQTL to find" apart from "colocalization failed" --
+    and those are opposite results.
+
+    The distinction only bites when the GTEx causal set is topped up rather than
+    intersected: under `causal_sampling: power`, and under the drawn-DFE arms
+    (H, I) in both sampling schemes. A locus with no partner cannot produce a
+    true colocalization, so any RCP it earns against some OTHER GTEx trait
+    (`n_other_50` / `n_other_90` in the trait dump) is a FALSE POSITIVE, and the
+    unpartnered loci are the only clean denominator for that rate.
+
+    Returns {} when the sidecar is absent, which is every run predating it; the
+    dump then carries `shared` as None rather than silently claiming False.
+    """
+    pf = glob.glob(os.path.join(stage2_dir, f"{gwas_cat}_trait_partners_*.tsv"))
+    if not pf:
+        return {}
+    out = {}
+    with open(pf[0]) as fh:
+        cols = fh.readline().rstrip("\n").split("\t")
+        try:
+            ti, si = cols.index("gwas_trait"), cols.index("shared")
+        except ValueError:
+            return {}
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            try:
+                out[f[ti]] = f[si].strip().lower() in ("true", "1")
+            except IndexError:
+                continue
+    return out
+
+
 def tested_flag(maf_by_trait, trait, fm_floor):
     """Was this trait's causal variant in the set handed to DAP-G?
 
@@ -540,7 +584,7 @@ def _new_row():
 
 def collect(root):
     rows = {}
-    for rep in sorted(glob.glob(os.path.join(root, "[A-G][0-9]*"))):
+    for rep in sorted(glob.glob(os.path.join(root, "[A-I][0-9]*"))):
         cat_letter = os.path.basename(rep)[0]
         # EVERY stage-2 directory, not just the first. One workdir can legitimately
         # hold several -- a run that changed gwas/gtex scaling or the causal MAF
@@ -604,6 +648,11 @@ def _collect_one(rows, rep, cat_letter, s2):
     # locus: it is a trait-pair question, so an untested causal variant still
     # permits a genuine detection through a tagging variant.
     gwas_causal_maf = causal_maf_by_trait(s2, gwas_cat)
+
+    # Which GWAS loci actually have a GTEx trait at the same causal variant.
+    # Only meaningful where the GTEx set is topped up rather than intersected;
+    # empty for every run predating the sidecar, and for those `shared` stays None.
+    gwas_shared = shared_partner_by_trait(s2, gwas_cat)
 
     # ---- GWAS side: independent of the eQTL panel ----
     gw_out = os.path.join(s3root, gwas_cat, "outputs")
@@ -696,6 +745,10 @@ def _collect_one(rows, rep, cat_letter, s2):
                     # not the other (the 500-person panel drops the most).
                     tested_gwas=int(tested_flag(gwas_causal_maf, tr, fm_floor)),
                     tested_gtex=int(tested_of(tr)),
+                    # None when the sidecar is missing. False means the locus has
+                    # NO GTEx trait at its causal variant, so self_rcp is 0 by
+                    # construction and any n_other_* it carries is a false positive.
+                    shared=gwas_shared.get(tr),
                     self_rcp=self_rcp, self_lcp=self_lcp,
                     n_other_50=sum(1 for v in others.values() if v[0] > 0.5),
                     n_other_90=sum(1 for v in others.values() if v[0] > 0.9),

@@ -87,6 +87,14 @@ rule stage2_split_pheno:
         gtex_size          = config["gtex_size"],
         already_neutral    = config.get("already_includes_neutral", True),
         neutral_trait_vars = config.get("neutral_trait_vars", False),
+        # Category H: no selection in the tree sequence at all, so the causal
+        # variants' effect-size parameters are drawn from the truncated DFE
+        # (helpers/synthetic_dfe.py) rather than read out of it. Emits nothing when
+        # False, so every pre-existing run's shell command is byte-identical.
+        synthetic_flag     = (
+            "--synthetic_dfe_effects True"
+            if config.get("synthetic_dfe_effects", False) else ""
+        ),
         # Number of central trait loci (GWAS + shared GTEx). Omit the flag when
         # unset so the script falls back to "use all eligible" (legacy).
         central_flag       = (
@@ -103,6 +111,16 @@ rule stage2_split_pheno:
         n_samples_flag     = (
             f"--n_samples {config['n_samples']}"
             if config.get("n_samples") is not None else ""
+        ),
+        # Power-weighted causal sampling. Emits nothing under the default "uniform"
+        # scheme, so the shell command for every pre-existing run is byte-identical.
+        sampling_flag      = (
+            "" if config["causal_sampling"] == "uniform" else
+            f"--causal_sampling {config['causal_sampling']}"
+            f" --sampling_gwas_n {config['sampling_gwas_n']}"
+            f" --sampling_sig_p {config['sampling_sig_p']}"
+            f" --sampling_min_power {config['sampling_min_power']}"
+            f" --sampling_min_pool_multiple {config['sampling_min_pool_multiple']}"
         ),
         out_dir            = paths.stage2_dir(config),
         marker             = paths.stage2_marker(config),
@@ -147,9 +165,11 @@ rule stage2_split_pheno:
             --out_dir "{params.out_dir}" \
             --already_includes_neutral {params.already_neutral} \
             --neutral_trait_vars {params.neutral_trait_vars} \
+            {params.synthetic_flag} \
             {params.central_flag} \
             --n_flank_gtex_traits {params.n_flank_gtex} \
             {params.n_samples_flag} \
+            {params.sampling_flag} \
             > {log} 2>&1
         touch "{params.marker}"
         """

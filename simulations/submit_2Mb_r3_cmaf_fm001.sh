@@ -51,10 +51,18 @@
 # every human hgwas locus burns two failed attempts before the retry ladder
 # (20 -> 40 -> 60 min) gets it through.
 #
+# CATEGORIES. Originally A/E; B, F and G were added when the category axis was
+# extended to this arm. Both the stage-1 AND the stage-2 source for B/F/G is the
+# cmaf_0.001 root, so submit_2Mb_r3_cmaf_replicates.sh must have COMPLETED for
+# the same replicate before this script can run it -- stage-2 adoption needs
+# .stage2.done, which is stricter than the psamp arm's stage-1-only dependency.
+# The per-replicate pre-flight below is what catches a missing one.
+#
 # Run from a login node:
 #   bash submit_2Mb_r3_cmaf_fm001.sh
 #   DRY=1 bash submit_2Mb_r3_cmaf_fm001.sh          # print, submit nothing
 #   REPS="A1 E1" bash submit_2Mb_r3_cmaf_fm001.sh   # subset
+#   REPS="B1 F1 G1" bash submit_2Mb_r3_cmaf_fm001.sh  # the B/F/G pilot
 
 set -euo pipefail
 REPO=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake
@@ -81,21 +89,54 @@ STAGE1_FALLBACK="$SCRATCH/simulations_round_3_2Mb"
 OUT_SCRATCH="$SCRATCH/simulations_round_3_2Mb_${CELL}_cmaf_${CAUSAL_FLOOR}_fm_${FM_FLOOR}"
 OUT_PUBLISH="$PUBLISH/simulations_round_3_2Mb_${CELL}_cmaf_${CAUSAL_FLOOR}_fm_${FM_FLOOR}"
 
-# Seed convention from the configs' own headers: A{N} -> 1{N}, E{N} -> 5{N}.
+# Seed convention from the configs' own headers:
+#   A{N} -> 1{N}   human, directional-negative selection on trait variants
+#   B{N} -> 2{N}   human, NEUTRAL trait variants (A's config + one override)
+#   E{N} -> 5{N}   cattle baseline from midpoint
+#   F{N} -> 6{N}   cattle + positive selection, WITH continued bottlenecking
+#   G{N} -> 7{N}   cattle + positive selection, WITHOUT it
 seed_of() {
     local n="${1:1}"
     case "${1:0:1}" in
         A) echo "1${n}" ;;
+        B) echo "2${n}" ;;
         E) echo "5${n}" ;;
+        F) echo "6${n}" ;;
+        G) echo "7${n}" ;;
+        H) echo "8${n}" ;; I) echo "9${n}" ;;
         *) echo "ERROR: no seed convention for '$1'" >&2; return 1 ;;
     esac
 }
 
+# B shares A's config: the two differ only in neutral_trait_vars, which
+# category_extra() supplies as a --config override.
+#
+# H and I do NOT share another category's config, unlike B. They are different
+# stage-1 pipelines (human_neutral / cattle_neutral: pure coalescents, no SLiM),
+# so each needs its own file rather than an override -- and having one means the
+# seed convention below can stay derived from the letter. One file, one genetic
+# model. I is the cattle counterpart of H: same drawn-DFE effect sizes, cattle
+# demography, and unlike E/F/G it simulates all twelve epochs itself rather than
+# resuming from the shared ep7 checkpoint.
 config_of() {
     case "${1:0:1}" in
-        A) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
-        E) echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
-        *) return 1 ;;
+        A|B) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        H)   echo "config/human_neutral_2Mb_${CELL}_r3.yaml" ;;
+        I)   echo "config/cattle_neutral_2Mb_${CELL}_r3.yaml" ;;
+        E)   echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
+        F)   echo "config/cattle_sel_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
+        G)   echo "config/cattle_sel_not_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
+        *)   return 1 ;;
+    esac
+}
+
+# Per-category --config tokens appended to EXTRA. NO TOKEN MAY CONTAIN A SPACE:
+# EXTRA_CONFIG is expanded unquoted by the controller so each space-separated
+# token becomes its own --config arg.
+category_extra() {
+    case "${1:0:1}" in
+        B) echo "neutral_trait_vars=True" ;;
+        *) echo "" ;;
     esac
 }
 
@@ -120,16 +161,25 @@ for ID in $REPS; do
     [[ -f "$REPO/$CFG" ]] || { echo "ERROR: missing config: $REPO/$CFG" >&2; exit 1; }
     seed_of "$ID" > /dev/null || exit 1
 
-    S1=""
-    for CAND in "$SRC_ROOT/${ID}/stage1" "$STAGE1_FALLBACK/${ID}/stage1"; do
-        if compgen -G "$CAND/*.ts" > /dev/null; then S1="$CAND"; break; fi
-    done
-    [[ -n "$S1" ]] || {
-        echo "ERROR: no stage-1 tree sequence for ${ID} in either" >&2
-        echo "       $SRC_ROOT/${ID}/stage1" >&2
-        echo "       $STAGE1_FALLBACK/${ID}/stage1" >&2
-        echo "Aborting -- no jobs launched." >&2; exit 1; }
-    STAGE1_SRC["$ID"]="$S1"
+    # Categories H and I build their own stage 1 rather than reusing one. They are
+    # distinct pipelines (human_neutral / cattle_neutral, pure coalescents --
+    # seconds to minutes, not hours), so there
+    # is no predecessor to point at and nothing to save by looking. An empty
+    # STAGE1_SRC tells the controller to omit stage1_search_dirs entirely.
+    if [[ "${ID:0:1}" =~ ^(H|I)$ ]]; then
+        STAGE1_SRC["$ID"]=""
+    else
+        S1=""
+        for CAND in "$SRC_ROOT/${ID}/stage1" "$STAGE1_FALLBACK/${ID}/stage1"; do
+            if compgen -G "$CAND/*.ts" > /dev/null; then S1="$CAND"; break; fi
+        done
+        [[ -n "$S1" ]] || {
+            echo "ERROR: no stage-1 tree sequence for ${ID} in either" >&2
+            echo "       $SRC_ROOT/${ID}/stage1" >&2
+            echo "       $STAGE1_FALLBACK/${ID}/stage1" >&2
+            echo "Aborting -- no jobs launched." >&2; exit 1; }
+        STAGE1_SRC["$ID"]="$S1"
+    fi
 
     # stage2_search_dirs wants the directory CONTAINING gwas_*_gtex_*_maf_*/,
     # i.e. <root>/<id>/stage2/<stage1 name>.cmaf_<floor>/.
@@ -180,6 +230,12 @@ for ID in $REPS; do
     # list literal below deliberately has none.
     EXTRA="causal_min_maf=${CAUSAL_FLOOR} fm_min_maf=${FM_FLOOR} min_maf=${GLM_FLOOR}"
     EXTRA="${EXTRA} ld_ctrl=${LD_CTRL} stage2_search_dirs=['${STAGE2_SRC[$ID]}']"
+    # Category tokens are NOT optional here. neutral_trait_vars is in
+    # params_record.STAGE2_KEYS, so a B replicate that omitted it would be
+    # refused by the stage-2 provenance guard rather than silently adopting the
+    # source arm's stage 2 under the wrong label.
+    CAT_EXTRA=$(category_extra "$ID")
+    [[ -n "$CAT_EXTRA" ]] && EXTRA="${EXTRA} ${CAT_EXTRA}"
     if [[ -n "$DRY" ]]; then
         printf "  DRY %-3s seed %-3s %s\n        STAGE1_SRC=%s\n        EXTRA_CONFIG=%s\n" \
             "$ID" "$SEED" "$CFG" "${STAGE1_SRC[$ID]}" "$EXTRA"

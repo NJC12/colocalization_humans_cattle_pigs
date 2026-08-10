@@ -27,24 +27,62 @@ import os
 
 # ---------- causal-variant MAF floor ----------
 
-# Every simulation output that exists on disk was produced at
-# causal_min_maf == 0.01, and those paths must stay reachable, so that one
-# historical value emits no path segment. This is a fact about what is already
-# on disk, NOT a relationship between causal_min_maf and min_maf -- the two are
-# independent knobs and are never compared. Snakefile's setdefault reads this
-# constant too, so the literal lives in exactly one place.
+# The PATH-SUPPRESSION SENTINEL, and nothing else. Every simulation output that
+# existed before ``causal_min_maf`` became a knob was produced at 0.01, and those
+# paths must stay reachable, so that one historical value emits no path segment.
+# This is a fact about what is already on disk, NOT a relationship between
+# causal_min_maf and min_maf -- the two are independent knobs and are never
+# compared.
+#
+# It used to double as the default. It no longer does: the default is
+# DEFAULT_CAUSAL_MIN_MAF below. Keeping the two decoupled is what lets the
+# default change without renaming every directory ever written. Do not re-couple
+# them.
 LEGACY_CAUSAL_MIN_MAF = 0.01
+
+# No floor unless a config asks for one. The rule is "causal_min_maf defaults to
+# 0, but always applies when provided" -- in BOTH sampling schemes, which is the
+# part that changed: the power path used to ignore the floor on the central pool
+# on the grounds that the detection-power weight subsumed it.
+#
+# 0 is not "no filter": ``maf > 0`` well-formedness still applies, since a site
+# monomorphic within a panel is not a variant there and an effect assigned to it
+# would produce a phenotype of pure noise. See create_gwas_files_and_phenotypes.py
+# :causal_eligible.
+DEFAULT_CAUSAL_MIN_MAF = 0
 
 
 def causal_min_maf(cfg):
     """MAF floor a variant must clear to be eligible as causative.
 
-    Governs the central selected pool, the central neutral recipient pool used
-    under ``neutral_trait_vars`` (categories B/D), and the flanking GTEx-only
-    loci. Independent of ``min_maf`` and ``fm_min_maf``; see the module
-    docstring.
+    Governs the central causal pool (in both sampling schemes), the central
+    neutral recipient pool used under ``neutral_trait_vars`` (categories B/D),
+    and the flanking GTEx-only loci. Independent of ``min_maf`` and
+    ``fm_min_maf``; see the module docstring.
     """
-    return cfg.get("causal_min_maf", LEGACY_CAUSAL_MIN_MAF)
+    return cfg.get("causal_min_maf", DEFAULT_CAUSAL_MIN_MAF)
+
+
+def causal_maf_token(value):
+    """Render a causal MAF floor the ONE way every path component must render it.
+
+    Three producers have to agree on this string: ``stage2_inner`` (the output
+    directory), ``causal_maf_segment`` (the stages-2..5 namespace), and the
+    f-string in ``create_gwas_files_and_phenotypes.py`` that names the directory
+    the script actually writes into. They agreed by accident while every value
+    was 0.01 or 0.001, which formats identically however it arrives.
+
+    Zero does not. The config carries YAML int ``0`` -> ``"0"``, but the stage-2
+    script parses ``--causal_min_maf`` as a float and gets ``"0.0"``. Snakemake
+    would then declare ``maf_0/`` as the rule's output while the script wrote
+    ``maf_0.0/``, and the rule would fail with its outputs missing after stage 2
+    had already done all the work.
+
+    Integral values render without the trailing ``.0``; everything else renders
+    as-is. Every value used before this existed is unchanged.
+    """
+    f = float(value)
+    return str(int(f)) if f == int(f) else str(f)
 
 
 def causal_maf_segment(cfg):
@@ -54,10 +92,56 @@ def causal_maf_segment(cfg):
     otherwise namespaced by the stage-1 filename alone -- separate between runs
     that drew their causal variants from different pools. Empty at
     ``LEGACY_CAUSAL_MIN_MAF``, which keeps every pre-existing path unchanged.
+
+    Note that the suppressed value is 0.01, not the default. A run at the
+    default (0) therefore DOES emit ``.cmaf_0``. That is deliberate: 0 and 0.01
+    draw from different pools and must not share a directory, and pinning the
+    suppression to the historical value is the only way existing outputs stay
+    adoptable.
     """
     if float(causal_min_maf(cfg)) == LEGACY_CAUSAL_MIN_MAF:
         return ""
-    return f".cmaf_{causal_min_maf(cfg)}"
+    return f".cmaf_{causal_maf_token(causal_min_maf(cfg))}"
+
+
+# ---------- causal-variant sampling scheme ----------
+
+# The historical scheme: a uniform draw from the pool that clears causal_min_maf.
+# Like LEGACY_CAUSAL_MIN_MAF this is a fact about what is already on disk -- it emits
+# no path segment so every existing path stays reachable.
+LEGACY_CAUSAL_SAMPLING = "uniform"
+
+
+def causal_sampling(cfg):
+    """How the central causal loci are drawn: ``"uniform"`` or ``"power"``.
+
+    Under ``"power"`` each central ``selco != 0`` variant is weighted by its
+    probability of being detected in a GWAS of ``sampling_gwas_n`` individuals and
+    the draw has inclusion probability proportional to that power (see
+    ``helpers/causal_power.py``).
+
+    ``causal_min_maf`` gates the central pool under BOTH schemes. It did not
+    always: power sampling used to drop the floor on the grounds that the weight
+    subsumed it, which meant the same ``causal_min_maf`` value described two
+    different pools depending on the scheme. The two knobs are still not
+    redundant -- the floor is a hard cut on frequency, the weight is a soft
+    preference over (effect size, frequency) jointly -- they now just compose.
+    """
+    return cfg.get("causal_sampling", LEGACY_CAUSAL_SAMPLING)
+
+
+def causal_sampling_segment(cfg):
+    """Path segment marking a non-historical sampling scheme, else ``""``.
+
+    Carries only the headline knob, ``sampling_gwas_n``: two power runs differing
+    solely in ``sampling_sig_p`` land on the same path and are caught by the
+    Snakefile's stage-2 provenance guard instead, which fails loudly rather than
+    silently reusing the wrong phenotypes. Path segments are for the parameters a
+    reader needs to tell runs apart at a glance; the params file is for the rest.
+    """
+    if causal_sampling(cfg) == LEGACY_CAUSAL_SAMPLING:
+        return ""
+    return f".psamp_{int(cfg['sampling_gwas_n'])}"
 
 
 # ---------- output tag (for parallel result sets, e.g. r2=0.25 vs r2=0.75) ----------
@@ -90,6 +174,31 @@ def stage1_human_ts(cfg):
     than by selecting a separate script.
     """
     return f"hts_{cfg['stage1_seed']}.ts"
+
+
+def stage1_human_neutral_ts(cfg):
+    """Top-level human_neutral tree sequence, from human_neutral_simulation.py.
+
+    ``nts_`` rather than ``hts_``: the two arms share a seed band convention and a
+    workdir layout, and stage-1 adoption via ``stage1_search_dirs`` matches on
+    filename plus embedded seed. A shared prefix would let an A tree sequence
+    satisfy an H run's input -- silently, and with a genome shaped by selection.
+    """
+    return f"nts_{cfg['stage1_seed']}.ts"
+
+
+def stage1_cattle_neutral_ts(cfg):
+    """Top-level cattle_neutral tree sequence, from cattle_neutral_simulation.py.
+
+    ``cnts_`` continues the ``hts_``/``nts_`` convention and is distinct from both
+    for the same reason they are distinct from each other: stage-1 adoption via
+    ``stage1_search_dirs`` matches on filename plus embedded seed, and a shared
+    prefix would let one arm's tree sequence satisfy another's input silently.
+    Nothing else in the cattle family uses this shape -- E/F/G carry the long
+    descriptive ``farm_*`` names because their filenames have to encode the SLiM
+    parameters that produced them, and this one has no forward phase to describe.
+    """
+    return f"cnts_{cfg['stage1_seed']}.ts"
 
 
 def stage1_cattle_baseline_orig(cfg):
@@ -192,6 +301,10 @@ def stage1_full_filename(cfg):
     p = cfg["pipeline"]
     if p == "human":
         return stage1_human_ts(cfg)
+    if p == "human_neutral":
+        return stage1_human_neutral_ts(cfg)
+    if p == "cattle_neutral":
+        return stage1_cattle_neutral_ts(cfg)
     if p == "cattle_baseline":
         return stage1_cattle_baseline_full(cfg)
     if p == "cattle_baseline_from_midpoint":
@@ -221,7 +334,8 @@ def stage1_dir(cfg):
 def stage2_run_tag(cfg):
     """Per-run tag that pins stage-2 outputs to the upstream stage-1 file
     (so changing stage1_seed gets a fresh stage-2 dir), plus the causal MAF
-    floor when it is not the historical 0.01.
+    floor when it is not the historical 0.01, plus the causal sampling scheme
+    when it is not the historical uniform draw.
 
     This is the sole namespace for stage2_dir, stage3_dir, stage4_dir and
     stage5_dir, and for the ``previous_workdirs`` adoption in the Snakefile, so
@@ -229,7 +343,7 @@ def stage2_run_tag(cfg):
     once -- including ``geno.sbams.gz``, the file every DAP-G job reads.
     """
     base = os.path.splitext(os.path.splitext(stage1_full_filename(cfg))[0])[0]
-    return base + causal_maf_segment(cfg)
+    return base + causal_maf_segment(cfg) + causal_sampling_segment(cfg)
 
 
 def stage2_dir(cfg):
@@ -254,7 +368,9 @@ def stage2_inner(cfg):
     """
     gw = cfg["gwas_scaling"]
     gt = cfg["gtex_scaling"]
-    return os.path.join(stage2_dir(cfg), f"gwas_{gw}_gtex_{gt}_maf_{causal_min_maf(cfg)}")
+    return os.path.join(
+        stage2_dir(cfg),
+        f"gwas_{gw}_gtex_{gt}_maf_{causal_maf_token(causal_min_maf(cfg))}")
 
 
 def stage2_marker(cfg):

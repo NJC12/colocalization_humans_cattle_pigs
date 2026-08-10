@@ -1,0 +1,106 @@
+# Category F (cattle + positive selection on 5 trait variants,
+# WITH continued bottlenecking through the late epochs), 2 Mb region
+# -- G5T20 PHENOTYPE-SCALING VARIANT. ROUND 3.
+#
+# Identical to cattle_sel_bottlenecked_2Mb_r3.yaml EXCEPT gwas_scaling is
+# 5 and gtex_scaling is 20, against 35 for both in the parent. This is an
+# ASYMMETRIC cell: a comparatively well-powered eQTL side against a weak GWAS
+# side, which separates the two halves of the colocalization from each other.
+# The two scalings are applied independently downstream -- helpers/paths.py picks
+# gwas_scaling for *gwas categories and gtex_scaling for *gtex ones, and stage-2
+# output is namespaced gwas_5_gtex_20_maf_* -- so nothing assumes equality.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, workdir and
+# publishdir on the command line (F{N} -> 6{N}:
+# F1=61 ... F10=70). Outputs land under a separate
+# ..._2Mb_g5t20 root so the cells never collide: stages 3-5 are named only by
+# the stage-1 filename, which carries no scaling.
+
+pipeline: cattle_sel
+species: cattle
+basename: cattle_sel_bot
+species_prefix: c
+
+# ---- Selection / demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+selection_multiplier: 100
+selected_generations: 23
+# 5, NOT the 26 that rounds 1 and 2 used. 26 was chosen for the 10 Mb region and
+# was carried onto 2 Mb unchanged, which is ~5x the intended density of
+# positively-selected variants per Mb. 26 * (2/10) = 5.2 -> 5 restores it.
+# This DOES break comparability with round-1/2 F and G -- deliberately. Note the
+# value is embedded in the stage-1 filename (..._muts5_...), so a muts5 run can
+# never adopt or collide with a muts26 tree sequence.
+num_muts_selected: 5
+continue_bottlenecking: 1
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t20 cell (parent uses 35)
+gtex_scaling: 20      # g5t20 cell (parent uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+cattle_baseline_seed: 20250303   # identifies the 2 Mb epoch_8.ts to load
+stage1_seed: 61
+stage2_seed: 61
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Point at the shared 2 Mb baseline's stage1 dir (where its epoch_8.ts lives).
+# stage1_search_dirs stays empty so every cattle+selection run re-runs the
+# from-ep8 SLiM job fresh (never short-circuits to a pre-existing full.ts).
+cattle_baseline_search_dirs: 
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline/stage1
+# stage1_search_dirs stays empty HERE, but is supplied per replicate on the CLI
+# by the arms that reuse an existing tree sequence (parameter sets 2 and 3 point
+# it at the set-1 root). Stage 1 RUNS for whichever arm goes first: F and G have
+# no round-3 tree sequences at all, unlike A and E.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/cattle_sel_bot
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/cattle_sel_bot
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+# Split-Q handoff: epochs 8-12 = 600+600+600+300+300 = 2400 ticks at
+# Q_scaling=0.01; everything older ran at Q=1.
+handoff_ticks: 2400
+deep_Q_scaling: 1

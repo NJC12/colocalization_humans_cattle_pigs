@@ -1,6 +1,6 @@
 # Snakemake-driven simulation pipelines
 
-Four pipelines, one Snakefile, four config YAMLs.
+Five pipelines, one Snakefile.
 
 ## Pipelines
 
@@ -10,8 +10,10 @@ Four pipelines, one Snakefile, four config YAMLs.
 | `config/cattle_baseline.yaml`            | cattle_baseline        | `farm_create_orig_pop_e2.py` -> `farm_burn_in_e2.slim` -> `farm_selection.slim` |
 | `config/cattle_sel_bottlenecked.yaml`    | cattle_sel             | `farm_selection_from_ep8.slim` (`num_muts_selected>0`, `continue_bottlenecking=1`) |
 | `config/cattle_sel_not_bottlenecked.yaml`| cattle_sel             | `farm_selection_from_ep8.slim` (`num_muts_selected>0`, `continue_bottlenecking=0`) |
+| `config/human_neutral_2Mb_*_r3.yaml`     | human_neutral          | `human_neutral_simulation.py` (msprime coalescent, no SLiM)       |
+| `config/cattle_neutral_2Mb_*_r3.yaml`    | cattle_neutral         | `cattle_neutral_simulation.py` (msprime coalescent, all 12 epochs, no SLiM) |
 
-All four share stages 2 (split + traits), 3 (DAP-G), 4 (fastEnloc), 5 (plink GLM).
+All share stages 2 (split + traits), 3 (DAP-G), 4 (fastEnloc), 5 (plink GLM).
 
 ## Quick start
 
@@ -169,7 +171,7 @@ from another, and each governs exactly one thing:
 
 | Config key | Governs | Where it is applied | Default |
 |---|---|---|---|
-| `causal_min_maf` | Which variants may be **selected as causative** — central selected, central neutral (categories B/D), and flanking GTEx alike | `create_gwas_files_and_phenotypes.py`, stage 2 | `0.01` |
+| `causal_min_maf` | Which variants may be **selected as causative** — central pool (in **both** sampling schemes), central neutral recipients (categories B/D), and flanking GTEx alike | `create_gwas_files_and_phenotypes.py`, stage 2 | `0` = no floor |
 | `fm_min_maf` | Which variants are **fine-mapped** (the SBAMS handed to DAP-G) | `stage3_index_geno`'s awk filter | `0` = no filter |
 | `min_maf` | Which variants enter the **GWAS** | `plink2 --maf`, stage 5 | required key |
 
@@ -230,6 +232,141 @@ Unlike the fine-mapping variants, these arms **cannot** reuse stage 2
 (`stage2_search_dirs`), because the causal floor decides which variants become
 traits at all. Stage 1 is still shared, and must be, or the arms are not
 comparable.
+
+### Semantics change: the floor defaults to 0 and always applies
+
+`causal_min_maf` used to default to `0.01` **and** to be skipped by the central
+pool under `causal_sampling: power`. Both changed together:
+
+- **Default is now `0`** (`paths.DEFAULT_CAUSAL_MIN_MAF`), i.e. no floor.
+- **A floor that is set applies in both sampling schemes**, to the central pool,
+  the GTEx top-up candidates, the `neutral_trait_vars` recipient pool, and the
+  flanks.
+- `0` is not "no filter": `maf > 0` well-formedness survives it. A site
+  monomorphic *within a panel* is not a variant there, and an effect assigned to
+  it would produce a phenotype of pure noise. That test used to be implicit in a
+  non-zero floor.
+
+**Every config in `config/` pins `causal_min_maf: 0.01` explicitly**, so the
+default change is inert for them and every stage-2..5 path they produce is
+byte-identical to before (verified across all 55). A hand-rolled `--config`
+invocation that omits the key now gets `0` rather than `0.01`.
+
+`paths.LEGACY_CAUSAL_MIN_MAF = 0.01` survives as the **path-suppression sentinel
+only**, decoupled from the default — which is what lets the default move without
+renaming every directory ever written. A run at the new default therefore *does*
+emit `.cmaf_0`. Do not re-couple the two.
+
+#### The `psamp` arms were relabelled `maf_0`
+
+`submit_2Mb_r3_x20_psamp_fm001.sh` never passed `causal_min_maf`; it inherited
+`0.01` and its own header said the value was "NOT a floor on the causal pool under
+power sampling". Under the new rule that content is a `causal_min_maf: 0` run, so
+the directories were relabelled to say so (`helpers/migrate_cmaf_psamp.py`), and
+the script now defaults `CAUSAL_FLOOR=0` to keep reproducing them.
+
+What makes the relabel safe rather than a guess: the new predicate at floor 0 is
+*exactly* the old no-floor predicate. Checked on a 24k-site fixture — central pool
+4024 vs 4024, top-up candidates 2778 vs 2778, identical position sets. The only
+rows that move are 4 flank sites monomorphic in the GTEx panel, which the new
+`maf > 0` term drops and which could never have been eQTLs.
+
+
+## Causal-variant sampling (`causal_sampling`)
+
+How the `n_central_traits` causal loci are picked out of the eligible pool. Two
+schemes; `uniform` is the default and is what every run through round 3 used.
+
+| Value | The draw |
+|---|---|
+| `uniform` | Uniform sample of the pool that clears `causal_min_maf` in **both** panels. The pool is intersected with the GTEx panel, so the GWAS and shared-GTEx causal sets are the same positions by construction. |
+| `power` | Every eligible central variant is weighted by its probability of being **detected** in a GWAS of `sampling_gwas_n` individuals, and the draw has inclusion probability proportional to that power. |
+
+A uniform draw is dominated by variants no realistic GWAS could find — 52–64% of
+the human pool sits below MAF 0.01 — so the simulated "GWAS loci" are not the kind
+of loci a real study reports. `power` picks loci the way a GWAS does.
+
+The model (`helpers/causal_power.py`). The phenotype is `y = ±β·g + N(0,1)` with
+`β = sqrt(|selco|) × gwas_scaling` and `g ∈ {0,1,2}`, never standardized, so
+
+```
+vexp  = 2f(1-f)β²          ncp = N · vexp / (1 + vexp)
+power = P(χ²₁(ncp) > qchisq(sampling_sig_p, 1, lower = FALSE))
+```
+
+the same identity as `add_gwas_significance()` in `figure2_revision2.ipynb` and
+`helpers/pval_rescale.py`. The draw is **πPS** (exact first-order inclusion
+probabilities), not `rng.choice(p=weights, replace=False)`, which is successive
+sampling and over-represents the high-power tail relative to its own weights.
+
+| Config key | Meaning | Default |
+|---|---|---|
+| `causal_sampling` | `uniform` or `power` | `uniform` |
+| `sampling_gwas_n` | GWAS size the power is computed for | `gwas_size` (8000 for A/E) |
+| `sampling_sig_p` | What "detected" means | `5e-8` |
+| `sampling_min_power` | Power floor used by the guard below | `0.05` |
+| `sampling_min_pool_multiple` | Refuse unless this × `n_central_traits` variants clear that floor | `2` |
+
+`sampling_gwas_n` is a knob in its own right: raise it to ask "which loci would a
+larger study find?" and the causal set shifts toward rarer, smaller-effect
+variants **without** changing the simulated GWAS.
+
+Four things that behave differently under `power`, all deliberate:
+
+- **`power` requires an explicit `n_central_traits`.** At the default
+  `causal_min_maf: 0` the pool is every polymorphic central variant, so "use all
+  eligible" would make the whole region causative.
+
+  `causal_min_maf` **does** gate the central pool here. It used to be skipped
+  under `power`, on the grounds that the detection-power weight subsumed a
+  frequency floor. It does not — a weight is a soft preference, a floor is a hard
+  cut — and having one knob mean two things depending on another knob made "the
+  pool at `causal_min_maf=0.01`" ambiguous. See the semantics note below.
+- **The two panels' causal sets can diverge.** The GWAS draw is not intersected
+  with the GTEx panel, so the shared GTEx set is only whichever drawn loci that
+  panel carries; the rest of the central GTEx slots are filled uniformly from
+  central `selco != 0` GTEx variants. **`helpers/summarize_coloc.py` and
+  `figure2_revision2.ipynb` do not yet know this** — both define a true positive
+  as trait-name equality and keep every GWAS trait in the denominator, so a
+  partnerless locus reads as a colocalization failure, and as a *false positive*
+  if it colocalizes with a neighbour. Read the partner count out of the stage-2
+  log before trusting any power or FDR number from a `power` run.
+- **The causal set differs between multiplier cells.** `β` scales with
+  `gwas_scaling`, so g5t20 / g10t20 / g5t30 are no longer paired
+  variant-for-variant.
+- **Stage 2 can refuse to run**, with the counts, when too little of the pool is
+  detectable. A draw from a pool where only a handful of variants carry real
+  weight is a few certainties plus an arbitrary tail, not a weighted sample.
+
+Two sidecars are written next to the phenotypes, only in this mode:
+
+```
+{h,c}gwas_causal_power_gwas_<g>_gtex_<t>_maf_<c>.tsv    whole pool: power, pi, selected
+{h,c}gwas_trait_partners_gwas_<g>_gtex_<t>_maf_<c>.tsv  gwas_trait -> gtex_trait, shared
+```
+
+The partner table is the explicit pairing a corrected scorer should read instead
+of inferring it from trait names.
+
+Paths carry a `.psamp_<sampling_gwas_n>` segment from `stage2_run_tag()`, composing
+with `.cmaf_<v>` and empty under `uniform`, so every pre-existing path is
+unchanged:
+
+```
+stage2/hts_11.psamp_8000/gwas_10_gtex_20_maf_0.01/
+stage3/hts_11.psamp_8000/hgwas/...
+```
+
+Only `sampling_gwas_n` is in the path. Two `power` runs differing solely in
+`sampling_sig_p` land on the same path and are caught by the stage-2 provenance
+guard instead — loudly, rather than silently reusing the wrong phenotypes. All
+five keys are in `STAGE2_KEYS`, so the guard covers them; records written before
+these keys existed are skipped rather than flagged, and are unaffected.
+
+`submit_2Mb_r3_x20_psamp_fm001.sh` launches the x20 arm (fine-mapping and GLM
+floors at 0.001). Its uniform counterpart is `submit_2Mb_r3_cmaf01_control.sh`
+run at the same cell and floors — `CELL=x20 FM_FLOOR=0.001 GLM_FLOOR=0.001` —
+which differs only in which 50 central variants were made causative.
 
 
 ## Per-simulation parameters file
@@ -470,12 +607,202 @@ without `##fileformat=…` headers). Override by setting
 | Population | GWAS size | GTEx size       | Selection on trait associated variants | Bottlenecking  | ID | Pipeline                      | Replicates |
 | ---------- | --------- | --------------- | -------------------------------------- | -------------  | -- | ----------------------------- | ---------- |
 | Human      |     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | A  |                         human |          4 |
-| Human      |     8,000 | 1,000, 500, 250 | Neutral                                | NA             | B  |                         human |          4 |
+| Human      |     8,000 | 1,000, 500, 250 | Neutral *(legacy — see below)*         | NA             | B  |                         human |          4 |
 | Human      |   100,000 |          50,000 | Directional (negative)                 | NA             | C  |                         human |          1 |
-| Human      |   100,000 |          50,000 | Neutral                                | NA             | D  |                         human |          1 |
+| Human      |   100,000 |          50,000 | Neutral *(legacy — see below)*         | NA             | D  |                         human |          1 |
 | Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative)                 | yes            | E  | cattle_baseline_from_midpoint |          4 |
 | Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | yes            | F  |       cattle_sel_bottlenecked |          4 |
 | Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | no             | G  |   cattle_sel_not_bottlenecked |          4 |
+| Human      |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | NA             | H  |                 human_neutral |          5 |
+| Cattle     |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | yes            | I  |                cattle_neutral |          5 |
+
+## The neutral models: B, H and I
+
+They answer different questions and are not interchangeable.
+
+**B (and D) keep a genome produced by a forward run UNDER selection.** Only the
+*assignment* of effects is neutral: each `selco != 0` donor's coefficient is moved
+onto a random `selco == 0` recipient and the trait is named for the recipient
+(`build_redistribution_map`). The genealogy still carries background selection, and
+the effect size still comes from a real coefficient — so a locus's effect size is
+tied to the donor's frequency history rather than to the recipient's.
+
+**H removes selection from the genome itself.** Stage 1 is a pure msprime
+coalescent under the same `OutOfAfrica_2T12` demography A uses, with no SLiM phase
+and no selected mutations at all (`human_neutral_simulation.py`). The causal
+variants' effect-size parameters are *drawn* in stage 2 from the DFE with its
+neutral class removed (`helpers/synthetic_dfe.py`, proportions 0.975/0.024/0.001
+over m1/m2/m3 — the neutral class was never a DFE component, it is the separate
+8.4e-9 overlay, so dropping it and renormalizing lands on the g1 vector verbatim).
+`beta = sqrt(|s|) * multiplier` exactly as in A, so effect sizes stay on A's scale.
+
+So: **B − A isolates the effect assignment; H − A isolates the genealogy.**
+
+B is retained for comparison and is fully runnable. It is marked legacy only in the
+sense that H is the model we expect to use going forward; nothing about it has been
+moved or disabled.
+
+**I is H with the cattle demography**, and that is the whole difference. The DFE
+they draw from is the same object — `human_simulation_o2.py:67-92` and
+`farm_selection.slim:40-45` define identical components with identical proportions,
+so `helpers/synthetic_dfe.py` needs no species variant. So **H − I isolates the
+demography**, and **I − E isolates the genealogy on the cattle side** exactly as
+H − A does on the human side.
+
+Two things about I differ from E/F/G rather than from H:
+
+*It simulates all twelve epochs.* E/F/G resume from the shared
+`farm_selection_*.ep7.ts` checkpoint because 29,800 ticks of burn-in plus epochs 2–7
+is unaffordable to re-run per replicate in SLiM. A coalescent has no burn-in — epoch
+1 is simply the ancestral state — so I runs the whole bottleneck from N=17,000 down
+to N=90 itself, in seconds. Its configs therefore carry neither `cattle_baseline_seed`
+nor `cattle_baseline_search_dirs`, and the pre-flight handoff guard in
+`submit_2Mb_r3_cmaf_replicates.sh` stays scoped to `^(E|F|G)$`.
+
+*Its `mutation_rate` is 5.6e-9, not 1.4e-8.* This is the opposite of H and it is not
+a typo — see below.
+
+### Why H's rate is the total and I's is the 5.6e-9 component
+
+The two families put the neutral overlay in different places. The human arms apply
+both halves in stage 1, so H must ask for the 1.4e-8 total (see the A1 measurement
+below). The cattle arms apply 5.6e-9 in SLiM and let
+`create_gwas_files_and_phenotypes.py:add_neutral` overlay 8.4e-9 in stage 2 — and
+that overlay runs **unconditionally** on the `--cattle_ts_file` branch, ignoring
+`already_includes_neutral` (which every cattle config sets to `True`, so making the
+branch honour it would silently switch E/F/G's overlay off). So I reproduces the same
+split: 5.6e-9 × Q in `cattle_neutral_simulation.py`, 8.4e-9 × Q in stage 2, total
+1.4e-8, and **no change to shared stage-2 code**. Both classes are neutral in I, so
+the split carries no meaning beyond landing on E/F/G's total.
+
+### What I measures against E
+
+Measured at L = 2 Mb, seed 91, `causal_min_maf: 0.01`, uniform sampling, both
+`cgwas` panels at 8,000 individuals:
+
+| | segregating sites | implied Ne | MAF < 0.01 | MAF ≥ 0.05 | mean MAF |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| E1 (forward, under selection) | 1,365 | 1,188 | 11.4% | 64.3% | 0.146 |
+| I1 (coalescent, no selection) | 4,196 | 3,652 | 1.6% | 83.7% | 0.212 |
+
+**I carries 3.07× E's variation, and E is also skewed toward rare variants.** Both
+are what background selection does, and the direction is the same one H shows
+against A — but the magnitude is far larger here, which is the interesting part.
+A's site count is dominated by young singletons thrown up by the out-of-Africa
+expansion, and BGS barely touches those, so A − H came to only 1.10× in site count
+(against 2.17× in π). Cattle has no such expansion: the deep history is 29,800
+generations at a flat N = 17,000 with the whole 2 Mb under the DFE, so the
+reduction lands on the site count directly. Read the 3.07× as an upper bound on
+BGS rather than a clean estimate of it — E's deep phase also ran at `Q_scaling: 1`
+and only epochs 8–12 at 0.01, whereas I is single-Q throughout.
+
+Note θ_W implies Ne = 3,652 while π implies ~10,980. That gap (positive Tajima's D)
+is the bottleneck, and it is present in I with no selection at all, which is what
+makes it usable as the null.
+
+Partner coverage is not a problem for I the way it is for H at a zero floor: at
+`causal_min_maf: 0.01` the run gives 50 central GWAS loci, 50 shared GTEx, 0 top-up
+and 50 flank — **50/50 partners**, no top-up needed. Still read
+`cgwas_trait_partners_*.tsv` before trusting a coloc rate at any other cell.
+
+### Why I runs at `Q_scaling: 0.01` when H runs at 1
+
+Under the Hudson coalescent the two are the same distribution: scaling every size and
+duration by 1/Q and every rate by Q leaves ∫dt/2N, µt and rt unchanged, and the tree
+sequences are identical (verified — the implied real Ne agrees to four decimal places
+between Q=0.01 and Q=1). What the value states is which process the run *claims* to
+approximate. E/F/G are Wright-Fisher populations of 9,000 whose entire membership is
+sampled; Hudson is the standard approximation to that. At `Q_scaling: 1` the same
+9,000-individual sample would be drawn from a population of 90 — an approximation to
+a process nobody simulates. `Q_scaling: 0.01` also keeps stage 2 correct without an
+exemption: `get_vars_df` multiplies the tick times by it, and `add_neutral` divides
+its overlay rate by `1/it`. There is no `handoff_ticks` — that exists for E/F/G,
+whose tree sequences span the Q=1 → Q=0.01 deep-history boundary and so carry a
+piecewise time scale. I is a single coalescent at a single Q.
+
+### H's mutation rate is the TOTAL, not the neutral component
+
+A mutates at 1.4e-8: SLiM applies the DFE at 5.6e-9 and msprime overlays neutral
+variation at 8.4e-9, and both classes end up in the tree sequence stage 2 reads.
+(Confirmed on A1: 60.6% of its 35,929 `hgwas` variants have `selco == 0`, against
+the predicted 8.4/14 = 60%.) H therefore runs at `mutation_rate: 1.4e-8` — matching
+*mutational input*, which is the thing that is not itself a consequence of
+selection. Simulating only the 8.4e-9 neutral component would give ~40% fewer
+variants and change fine-mapping difficulty alongside the genetic model.
+
+Measured against A1 at L = 2 Mb, H then carries **~10% more segregating sites and
+~2.2× the nucleotide diversity**. That gap is the background selection A has and H
+does not, and it is a result rather than a miscalibration: a mis-set rate would move
+site count and π by the *same* factor, and these move by 1.10 and 2.17. Under a
+recent expansion most segregating sites are young singletons, whose count barely
+depends on the deep coalescent rate BGS suppresses, while π depends on it strongly.
+
+### Run H with a causal MAF floor, or with power sampling — not uniform-at-zero
+
+H does not intersect its causal pool with the GTEx panel (it uses `select_gtex_topup`
+in both sampling schemes, per the model as specified: draw 50 in the GWAS panel,
+whichever GTEx carries become causal there, top up the rest). A GWAS locus the GTEx
+panel lacks has no partner, and both scorers count that as a colocalization failure.
+Measured on H1 at L = 2 Mb, x35:
+
+| sampling | `causal_min_maf` | central pool | GTEx shared | top-up | partners |
+| -------- | ---------------- | -----------: | ----------: | -----: | -------: |
+| uniform  | 0.01             |        1,299 |          50 |      0 |    50/50 |
+| power    | 0.01             |        1,299 |          50 |      0 |    50/50 |
+| power    | 0                |       20,097 |          46 |      4 |    46/50 |
+| uniform  | 0                |       20,097 |          10 |     40 |  **10/50** |
+
+At a 0.01 floor a common GWAS variant almost always segregates in a
+1,000-individual GTEx panel, so the issue does not arise. At a zero floor the pool
+is dominated by very rare variants; power weighting still lands on common ones, but
+a uniform draw does not, and four fifths of the loci end up with nothing to find.
+The configs pin `causal_min_maf: 0.01` for this reason. Stage 2 prints the partner
+count and writes `<panel>_trait_partners_*.tsv`; neither scorer reads it yet.
+
+### Round-3 notes on B, F and G
+
+**B has no config of its own.** It is A's `config/human_2Mb_<cell>_r3.yaml` plus a
+single `--config neutral_trait_vars=True` override, which redistributes each
+donor's effect onto a random neutral recipient and names the trait for the
+recipient. One file, one genetic model.
+
+**B under `causal_sampling: power` loses a GTEx partner or two, and so does A.**
+Under uniform sampling the neutral recipient pool is intersected with the GTEx
+panel and floored at `causal_min_maf`, so every GWAS trait is guaranteed a partner.
+Power sampling drops that intersection for *every* category, so a GWAS trait can
+sit where the GTEx panel carries nothing — which both scorers still count as a
+colocalization failure rather than as "nothing to find". Measured in
+`…_2Mb_x30_psamp_8000_fm_0.001`: A1 48/50, A2 47/50, B1 48/50; cattle F1 and G1
+both 50/50, their panels being far less sparse. So this is a property of the
+sampling scheme, not of B, and it does not bias an A-vs-B comparison at one cell.
+Stage 2 prints the count and writes the answer key to
+`<panel>_trait_partners_*.tsv`; neither scorer reads that file yet.
+
+Do not re-introduce a GTEx intersection on B's recipient pool to "fix" this: it
+would give B a partner rate A does not have, and the A−B difference would then be
+partly a partner-rate artefact.
+
+**B × power crashed before 2026-08-04 and the outputs of that combination do not
+exist anywhere.** `combine_phenos_to_df` resolved the *donor's* selection
+coefficient against the panel it was phenotyping, which is the GTEx frame for the
+shared central loci — and under power sampling the donor pool is not intersected
+with that panel, so ~76% of donors are absent from it and the lookup raised
+`KeyError`. The donor's selco now travels on its own row (it is mutation metadata,
+identical in every panel that carries it); only the recipient, whose site id must
+be a row of the tree sequence being phenotyped, is still resolved against `vars`.
+
+**Round-3 F and G run at `num_muts_selected: 5`, not the 26 rounds 1 and 2 used.**
+26 was sized for the 10 Mb region and was carried onto 2 Mb unchanged, ~5× the
+intended density of positively-selected variants per Mb; `26 × (2/10) = 5.2 → 5`
+restores it. This deliberately breaks comparability with round-1/2 F/G. The value
+is embedded in the stage-1 filename (`..._muts5_...`), so a `muts5` run can never
+adopt or collide with a `muts26` tree sequence.
+
+**F and G have no round-3 stage 1 anywhere**, unlike A and E. Whichever arm runs
+them first must use `controller_2Mb.sbatch` (which does not require `STAGE1_SRC`);
+later arms reuse that tree sequence via `stage1_search_dirs` on the command line.
+Both read the same shared `…ep7.ts` handoff that E does, via
+`cattle_baseline_search_dirs`.
 
 ## List of snakemake submission commands
 
@@ -488,8 +815,10 @@ last. Each run gets its own flat publishdir
 scratch workdir, so the 22 runs never collide and existing in-flight
 controllers (e.g. `snakemake/cattle_sel_bot/`) keep running undisturbed.
 
-Seeds encode the run identity: tens digit = letter (A=1, B=2, …, G=7),
-ones digit = replicate. So A1 → 11; D1 → 41; F2 → 62; G4 → 74.
+Seeds encode the run identity: tens digit = letter (A=1, B=2, …, G=7, H=8,
+I=9), ones digit = replicate. So A1 → 11; D1 → 41; F2 → 62; G4 → 74; H1 → 81;
+I1 → 91. **I is the last letter this rule has room for** — a tenth category
+would need a two-digit tens component and the invariant would break.
 
 ```bash
 ssh o2.hms.harvard.edu << 'EOF'

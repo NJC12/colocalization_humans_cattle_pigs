@@ -38,6 +38,11 @@ gtex_h2: 0.4
 gwas_scaling: 20       # x20 variant (x35 run uses 35)
 gtex_scaling: 20       # x20 variant (x35 run uses 35)
 min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
 gwas_size: 8000
 gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
 neutral_trait_vars: False   # category A; B overrides this to True via --config

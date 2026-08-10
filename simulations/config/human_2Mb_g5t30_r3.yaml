@@ -1,0 +1,88 @@
+# Human simulation, 2 Mb region -- G5T30 PHENOTYPE-SCALING VARIANT
+# of category A. ROUND 3.
+#
+# Identical to human_2Mb_r3.yaml EXCEPT gwas_scaling is 5 and gtex_scaling is 30, against 35
+# for both in the x35 run. The MOST ASYMMETRIC eQTL-favouring cell run so far:
+# the eQTL side carries 6x the GWAS side's scaling, against 4x in g5t20 and 2x
+# in g10t20. The three together trace how colocalization responds as the eQTL
+# study is favoured more and more strongly, with g20t5 as the mirror on the
+# other side. The two scalings are applied independently downstream --
+# helpers/paths.py picks gwas_scaling for *gwas categories and gtex_scaling for
+# *gtex ones, and stage-2 output is namespaced gwas_5_gtex_30_maf_* -- so
+# nothing in the pipeline assumes equality.
+#
+# Stage 1 (the genetic simulation) is NOT rerun: each replicate reuses the
+# existing round-3 x35 hts_*.ts via stage1_search_dirs, passed PER REPLICATE on the
+# command line by submit_2Mb_r3_multipliers.sh (it points at that replicate's own
+# stage1 dir only -- the lookup is seed-strict). Only stages 2-5 rerun.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, stage1_search_dirs,
+# workdir, publishdir on the command line (A{N} -> seed 1{N}: A1=11 ... A10=20).
+# Outputs land under a separate ..._2Mb_g5t30 root so the cells never collide:
+# stages 3-5 are named only by the stage-1 filename, which carries no scaling.
+
+pipeline: human
+species: human
+basename: human
+species_prefix: h
+
+# ---- Demography parameters ----
+Q_scaling: 10
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t30 cell (x35 run uses 35)
+gtex_scaling: 30       # g5t30 cell (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False   # category A; B overrides this to True via --config
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 11
+stage2_seed: 11
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the
+# round-3 x35 stage1 dir so stage 1 is reused, not rerun). Leave empty here.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t30/human
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t30/human
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
