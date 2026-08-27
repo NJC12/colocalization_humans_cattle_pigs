@@ -154,7 +154,18 @@ if not os.path.exists(f'{temp_dir}/{ts_name}'):
     )
     contig.add_dfe(intervals=np.array([[0, L]]), DFE=dfe)
 
-    ts = engine.simulate(model, contig, samples, slim_scaling_factor=Q)
+    # seed= is what makes the forward simulation reproducible, and it was missing.
+    # Without it stdpopsim draws its OWN random seed for the SLiM run and for the
+    # recapitation, so --seed governed only the final neutral overlay
+    # (msprime.sim_mutations below) and the genealogy was a fresh draw every time.
+    #
+    # Measured before the fix: re-running A1 at seed 11 gave SLiM seed
+    # 1279629471595547445 against the archived run's 2694906348395020459, and a
+    # different genealogy -- 55,150 nodes and 162,450 edges against 54,900 and
+    # 162,127. Same stdpopsim 0.3.0, same SLiM 4.2.2, same msprime 1.4.1; nothing
+    # had changed but the unseeded draw. So no human tree sequence in the project
+    # could be regenerated from the seed it was named for.
+    ts = engine.simulate(model, contig, samples, slim_scaling_factor=Q, seed=seed)
     print(ts)
 
     def remove_fixed(ts):

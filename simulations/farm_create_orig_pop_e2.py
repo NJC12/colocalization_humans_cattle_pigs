@@ -63,7 +63,14 @@ def selection_coeff_bulk(num_muts):
 
     type_list = np.array([int(1)]*mut_types[0] + [int(2)]*mut_types[1] + [int(3)]*mut_types[2])
     mutation_selection_coefficients = np.concatenate((m1s, m2s, m3s))
-    p = np.random.permutation(len(type_list))
+    # rng, not np.random: this permutation decides WHICH mutation receives which
+    # selection coefficient, so an unseeded draw made the whole cattle deep
+    # history unreproducible from its seed -- including the shared
+    # farm_selection_*.ep7.ts checkpoint that every cattle replicate resumes from.
+    # `rng` is the module's seeded generator (np.random.default_rng(seed)), and
+    # rng.multinomial three lines up already uses it; this line was the only
+    # unseeded RNG call left in the pipeline.
+    p = rng.permutation(len(type_list))
     
     return mutation_selection_coefficients[p], type_list[p]
 
