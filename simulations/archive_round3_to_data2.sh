@@ -202,11 +202,16 @@ A vs K is the effect assignment alone. L does the same for E vs I.
                                RCP/LCP per GWAS-trait/eQTL-trait pair
     *_glm_lead_snps.tsv        plink2 GLM lead SNP per trait
     *_trait_partners_*.tsv     which GWAS causal loci have a GTEx trait at the
-                               SAME causal variant. Only present where the GTEx
+                               SAME causal variant. Present wherever the GTEx
                                causal set is topped up rather than intersected
-                               (power sampling; H and I). Its absence elsewhere
-                               means every locus has a partner by construction.
-    *_synthetic_dfe_*.tsv      the drawn selection coefficients (H and I only)
+                               (power sampling; the drawn-DFE arms H, I, K, L in
+                               both schemes; any arm at require_gtex_partner
+                               False), and also wherever the pairing rule was
+                               stated explicitly -- there it is all-True, which
+                               is the point: an ABSENT file is ambiguous between
+                               "intersected" and "written before this existed".
+    *_synthetic_dfe_*.tsv      the drawn selection coefficients (the drawn-DFE
+                               arms: H, I, K, L)
     stage2_params.txt          the full parameter record for that run
 
 Panel prefixes: `h` human / `c` cattle, then `gwas`, `gtex` (1000 individuals),

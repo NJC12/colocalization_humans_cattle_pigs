@@ -540,8 +540,9 @@ def shared_partner_by_trait(stage2_dir, gwas_cat):
     and those are opposite results.
 
     The distinction only bites when the GTEx causal set is topped up rather than
-    intersected: under `causal_sampling: power`, and under the drawn-DFE arms
-    (H, I) in both sampling schemes. A locus with no partner cannot produce a
+    intersected: under `causal_sampling: power`, under the drawn-DFE arms (H, I
+    and the background-selection pair K, L) in both sampling schemes, and under
+    any arm that sets `require_gtex_partner: False` explicitly. A locus with no partner cannot produce a
     true colocalization, so any RCP it earns against some OTHER GTEx trait
     (`n_other_50` / `n_other_90` in the trait dump) is a FALSE POSITIVE, and the
     unpartnered loci are the only clean denominator for that rate.

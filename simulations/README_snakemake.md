@@ -369,6 +369,56 @@ run at the same cell and floors — `CELL=x20 FM_FLOOR=0.001 GLM_FLOOR=0.001` �
 which differs only in which 50 central variants were made causative.
 
 
+## GWAS/GTEx pairing of the causal loci (`require_gtex_partner`)
+
+Whether a central causal locus must segregate in **both** panels to be eligible.
+
+| Value | The pool |
+|---|---|
+| `true` | Intersected with the GTEx panel and re-tested against `causal_min_maf` there. The GWAS and shared-GTEx causal sets are the SAME positions, so every GWAS locus has a partner by construction. |
+| `false` | Not intersected. The shared GTEx set is whichever drawn loci that panel carries; the remaining central GTEx slots are filled uniformly by `select_gtex_topup`. A GWAS locus GTEx lacks has **no partner** and cannot colocalize. |
+| `auto` *(default)* | Intersect iff the draw is `uniform` AND the effect sizes are the variants' own — i.e. the rule this key replaced. |
+
+This used to be derived rather than set:
+
+```python
+topup_gtex = power_sampling or synthetic_effects
+```
+
+which was a reasonable default and a bad constraint. It made two conditions
+inexpressible — a uniform draw **without** the intersection, and a synthetic-DFE
+or power draw **with** it — and both are arms of a design that varies the pairing
+on purpose. It also meant one value of `causal_sampling` silently changed what
+`synthetic_dfe_effects` did.
+
+`auto` reproduces the old behavior in all four scheme combinations and emits no
+path segment, so every arm already on disk is unaffected;
+`helpers/tests/test_gtex_partner.py` pins that. A value that *differs* from the
+derived one gets `.gtexreq_1` / `.gtexreq_0` in `stage2_run_tag()`, appended last
+so every existing tag stays a strict prefix. The key is in
+`params_record.STAGE2_KEYS`, so a stage-2 directory built under a different
+pairing is refused at parse time rather than silently reused — which is
+load-bearing, because two arms differing **only** in this key otherwise write
+byte-identical filenames.
+
+Two things to know before reading a number off a `false` arm:
+
+- **The partner table is the ground truth.** `{h,c}gwas_trait_partners_*.tsv` is
+  now written whenever the pairing rule is stated explicitly, not only when the
+  set is topped up. Where the pool was intersected it is all-`True` — which is
+  the point: an *absent* file is ambiguous between "intersected, so all-True" and
+  "topped up, but written by a version that did not emit this".
+- **`summarize_coloc.py` does not yet condition on it.** It reads the table into
+  `--dump-traits` but not into `enloc_pow_*` / `enloc_fp_*`, so a partnerless
+  locus counts as a colocalization failure and, if it hits a neighbour, as a
+  false positive. A paired-vs-unpaired difference is therefore partly this
+  artefact until that is fixed.
+
+Under `power` the intersection also shrinks the pool the detection-power weights
+are computed over, so the pool-adequacy guard is stricter than at `false`; stage 2
+prints a note and the refusal message says so, because every knob that message
+otherwise suggests is the wrong one to reach for.
+
 ## Per-simulation parameters file
 
 Every real invocation writes the resolved config — after defaults and every
@@ -564,18 +614,29 @@ without `##fileformat=…` headers). Override by setting
 - **Stage-3/4/5 search-dir reuse**: only stage 1 and stage 2 read search dirs.
   Stages 3-5 always regenerate (cgwas dap-g is by far the most expensive part,
   so this matters if you ever want to reuse it -- not currently supported).
-- **Crediting a tagging variant**: `summarize_coloc.py` scores a true positive by
-  the *identity* of the causal variant, so an individual locus whose causal variant
-  fell below `fm_min_maf` can only ever report 0% TP. Those loci are isolated on
-  their own `causal_tested=False` rows, which makes the table legible, but nothing
-  yet credits a credible set for containing a variant that merely tags the truth.
-  A window match (against `dapg_window`) or an LD match (r2 from the stage-2 VCF,
-  which still holds the causal variant) would need new code.
-- **`fetch_big_results_2Mb.sh` and causal-MAF arms**: it pins
-  `SUB=stage2/*/gwas_35_gtex_35_maf_0.01` and rsyncs flat into `$LOCAL/$CAT/$ID/`,
-  so it will not match a `maf_0.001` directory -- and widening the glob would
-  flatten two arms into one local directory. Parameterise it per output root
-  before fetching a causal-MAF run.
+- **Crediting a tagging variant, in the FINE-MAPPING columns only**: the CPIP and
+  `*_cs_causative` columns score a hit by the *identity* of the causal variant, so
+  a locus whose causal variant fell below `fm_min_maf` can only ever report 0%
+  there. Those loci are isolated on their own `causal_tested=False` rows, but
+  nothing yet credits a credible set for merely containing a variant that *tags*
+  the truth. A window match (against `dapg_window`) or an LD match (r2 from the
+  stage-2 VCF, which still holds the causal variant) would need new code.
+
+  This bullet used to say the same of the **colocalization** columns. That has not
+  been true since `a4c91b7` ("Score colocalization over all loci, not just
+  fine-mapped ones"): those columns now use every locus, because a locus whose
+  causal variant went untested can still colocalize correctly -- both credible sets
+  are built from tags of the one variant the two traits share. See the
+  `n_causal_tested` entry in `helpers/summarize_coloc.py`'s docstring, which is
+  authoritative.
+- **Partner-conditioned colocalization rates**: `summarize_coloc.py` reads
+  `{h,c}gwas_trait_partners_*.tsv` (`shared_partner_by_trait`) but feeds it only
+  into `--dump-traits`, not into the `enloc_pow_*` / `enloc_fp_*` counts. Where the
+  GTEx causal set is topped up rather than intersected -- H, I, K, L in both
+  schemes, every `power` arm, and any arm at `require_gtex_partner: False` -- a
+  GWAS locus with no partner reads as a colocalization failure, and as a false
+  positive if it colocalizes with a neighbour. Read the partner table before
+  comparing a rate across arms that differ in the pairing.
 
 
 ## Submitting on O2 issues
@@ -606,22 +667,22 @@ without `##fileformat=…` headers). Override by setting
 
 | Population | GWAS size | GTEx size       | Selection on trait associated variants | Bottlenecking  | ID | Pipeline                      | Replicates |
 | ---------- | --------- | --------------- | -------------------------------------- | -------------  | -- | ----------------------------- | ---------- |
-| Human      |     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | A  |                         human |          4 |
-| Human      |     8,000 | 1,000, 500, 250 | Neutral *(legacy — see below)*         | NA             | B  |                         human |          4 |
+| Human      |     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | A  |                         human |          5 |
+| Human      |     8,000 | 1,000, 500, 250 | Neutral *(legacy — see below)*         | NA             | B  |                         human |          5 |
 | Human      |   100,000 |          50,000 | Directional (negative)                 | NA             | C  |                         human |          1 |
 | Human      |   100,000 |          50,000 | Neutral *(legacy — see below)*         | NA             | D  |                         human |          1 |
-| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative)                 | yes            | E  | cattle_baseline_from_midpoint |          4 |
-| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | yes            | F  |       cattle_sel_bottlenecked |          4 |
-| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | no             | G  |   cattle_sel_not_bottlenecked |          4 |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative)                 | yes            | E  | cattle_baseline_from_midpoint |          5 |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | yes            | F  |       cattle_sel_bottlenecked |          5 |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | no             | G  |   cattle_sel_not_bottlenecked |          5 |
 | Human      |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | NA             | H  |                 human_neutral |          5 |
 | Cattle     |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | yes            | I  |                cattle_neutral |          5 |
-| Human (AFR)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | J  |                         human | 5 *(planned)* |
-| Human      |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | NA             | K  |                         human | 5 *(planned)* |
-| Cattle     |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | yes            | L  | cattle_baseline_from_midpoint | 5 *(planned)* |
-| Human (FIN)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | founder event  | M  |                         human | 5 *(planned)* |
-| Human (NFE)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | N  |                         human | 5 *(planned)* |
-| Human      |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | NA             | O  |                         human | 5 *(planned)* |
-| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | yes            | P  | cattle_baseline_from_midpoint | 5 *(planned)* |
+| Human (AFR)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | J  |                         human |          5 |
+| Human      |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | NA             | K  |                         human |          5 |
+| Cattle     |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | yes            | L  | cattle_baseline_from_midpoint |          5 |
+| Human (FIN)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | founder event  | M  |                         human |          5 |
+| Human (NFE)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | N  |                         human |          5 |
+| Human      |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | NA             | O  |                         human |          5 |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | yes            | P  | cattle_baseline_from_midpoint |          5 |
 
 ## Categories K and L: background selection
 

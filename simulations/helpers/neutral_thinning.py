@@ -26,6 +26,8 @@ built this way:
 * The causal machinery is untouched by construction. ``causal_eligible``,
   ``flank_eligible``, ``select_central_power`` and ``select_gtex_topup`` all
   select on ``selco != 0``; this module only ever deletes ``selco == 0`` sites.
+  Under ``synthetic_dfe_effects`` that predicate is INVERTED (the neutral class
+  is the causal pool), which is why the Snakefile refuses to combine the two.
   The pools, the pi-PS weights, the drawn positions, the effect sizes and the
   trait-partner tables therefore come out IDENTICAL to the un-thinned arm.
 

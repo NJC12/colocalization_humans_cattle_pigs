@@ -73,6 +73,7 @@ STAGE2_KEYS = (
     "n_flank_gtex_traits",
     "neutral_trait_vars",
     "synthetic_dfe_effects",
+    "require_gtex_partner",
     "neutral_keep_fraction",
     "already_includes_neutral",
     "L",

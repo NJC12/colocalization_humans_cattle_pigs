@@ -220,10 +220,15 @@ def neutral_keep_fraction(cfg):
     ``k * 8.4e-9`` (Poisson thinning), which is what lets categories O and P reuse
     A's and E's stage-1 tree sequences instead of re-simulating at a lower rate.
 
-    Only the neutral class is touched. ``causal_eligible``, ``flank_eligible``,
-    ``select_central_power`` and ``select_gtex_topup`` all select on ``selco != 0``,
-    so the causal pools, the power weights, the drawn positions and the trait
-    partner tables are identical to the un-thinned arm at the same seed.
+    Only the neutral class is touched, so the causal pools, the power weights, the
+    drawn positions and the trait partner tables are identical to the un-thinned
+    arm at the same seed -- PROVIDED the causal pool is the selected class. That is
+    true for A/E and every arm that reads effect sizes off the tree sequence, and
+    it is why O and P are defined against A and E. It is NOT true under
+    ``synthetic_dfe_effects``, where ``causal_eligible`` inverts its predicate to
+    ``selco == 0`` and the neutral class IS the causal pool -- thinning it would
+    change the draw, not just the background. The Snakefile rejects that
+    combination rather than relying on this note.
     """
     return float(cfg.get("neutral_keep_fraction", NO_NEUTRAL_THINNING))
 
@@ -245,6 +250,64 @@ def neutral_thin_segment(cfg):
     if k == NO_NEUTRAL_THINNING:
         return ""
     return f".nkeep_{power_plateau_token(k)}"
+
+
+# ---------- GWAS/GTEx pairing of the causal loci ----------
+
+#: ``require_gtex_partner`` value that reproduces the historical DERIVED rule:
+#: intersect the central causal pool with the GTEx panel iff the draw is uniform
+#: AND the effect sizes are the variants' own. Every run before this key existed
+#: sits here and emits no path segment, so no pre-existing path moves.
+LEGACY_REQUIRE_GTEX_PARTNER = "auto"
+
+
+def require_gtex_partner_auto(cfg):
+    """The rule this knob replaces: intersect iff uniform and non-synthetic.
+
+    Kept as a function rather than inlined because it is the definition of
+    ``auto``, and ``require_gtex_partner_segment`` has to compare against it to
+    know whether an explicit value is actually saying anything new.
+    """
+    return (causal_sampling(cfg) != "power"
+            and not cfg.get("synthetic_dfe_effects", False))
+
+
+def require_gtex_partner(cfg):
+    """Must a central causal locus segregate in the GTEx panel to be drawn?
+
+    ``True`` intersects the pool, so every GWAS causal locus has a GTEx partner
+    by construction and the two panels' causal sets are the same positions.
+    ``False`` does not, so the shared GTEx set is whichever drawn loci that panel
+    happens to carry and the rest of its central slots are topped up uniformly --
+    which means a GWAS locus can have no partner at all and cannot colocalize.
+    ``"auto"`` is ``require_gtex_partner_auto``.
+
+    This used to be derived rather than set, which made two experimental
+    conditions unreachable: a uniform draw WITHOUT the intersection, and a
+    synthetic-DFE or power draw WITH it. Both are arms of the publication run --
+    the pairing is the thing being varied, so it has to be a knob.
+    """
+    return cfg.get("require_gtex_partner", LEGACY_REQUIRE_GTEX_PARTNER)
+
+
+def require_gtex_partner_segment(cfg):
+    """Path segment marking a pairing rule the derived one would not have given.
+
+    Pairing changes stage-2 CONTENT -- which loci become causal, and whether a
+    GWAS locus has a GTEx partner -- but like ``n_central_traits`` it appears in
+    no filename. Two arms differing only in this key would write the same
+    filenames, and in the flat archive layout (``<arm>/<replicate>/<file>``) they
+    would land on top of each other with nothing to tell them apart.
+
+    Emitted only when the resolved value DIFFERS from ``require_gtex_partner_auto``,
+    so a run that merely states the rule it would have got anyway is
+    byte-identical to one that says nothing -- which is what lets the launcher
+    pass this key for all 120 publication runs without moving any existing path.
+    """
+    v = require_gtex_partner(cfg)
+    if v == LEGACY_REQUIRE_GTEX_PARTNER or bool(v) == require_gtex_partner_auto(cfg):
+        return ""
+    return ".gtexreq_1" if v else ".gtexreq_0"
 
 
 # ---------- output tag (for parallel result sets, e.g. r2=0.25 vs r2=0.75) ----------
@@ -456,7 +519,13 @@ def stage2_run_tag(cfg):
     floor when it is not the historical 0.01, plus the causal sampling scheme
     when it is not the historical uniform draw, plus the central-trait count
     when it is not the historical 50, plus the neutral keep fraction when the
-    neutral class was thinned.
+    neutral class was thinned, plus the GWAS/GTEx pairing rule when it is not the
+    one the derived rule would have chosen.
+
+    Segments are appended in that order and each is empty at its legacy value, so
+    every tag ever written stays a strict prefix of the tag a later, more
+    parameterised run produces -- which is what ``summarize_coloc.read_params``
+    relies on when it prefix-globs ``{tag}.*.params.txt``.
 
     This is the sole namespace for stage2_dir, stage3_dir, stage4_dir and
     stage5_dir, and for the ``previous_workdirs`` adoption in the Snakefile, so
@@ -465,7 +534,8 @@ def stage2_run_tag(cfg):
     """
     base = os.path.splitext(os.path.splitext(stage1_full_filename(cfg))[0])[0]
     return (base + causal_maf_segment(cfg) + causal_sampling_segment(cfg)
-            + trait_count_segment(cfg) + neutral_thin_segment(cfg))
+            + trait_count_segment(cfg) + neutral_thin_segment(cfg)
+            + require_gtex_partner_segment(cfg))
 
 
 def stage2_dir(cfg):

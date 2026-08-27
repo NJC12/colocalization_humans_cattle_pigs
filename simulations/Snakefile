@@ -122,6 +122,53 @@ if config["synthetic_dfe_effects"] and config["neutral_trait_vars"]:
         "two different neutral models. Categories H and I set the former; B and D set "
         "the latter."
     )
+# Must a central causal locus segregate in the GTEx panel to be eligible?
+#
+# True intersects the causal pool with that panel, so every GWAS causal locus has
+# a GTEx partner by construction. False does not, so the shared GTEx set is only
+# whichever drawn loci that panel carries and the rest of its central slots are
+# topped up uniformly -- a GWAS locus can then have no partner and cannot
+# colocalize at all. Read {h,c}gwas_trait_partners_*.tsv before comparing a
+# colocalization rate from a False arm against one from a True arm.
+#
+# "auto" is the rule this key replaces: intersect iff the draw is uniform AND the
+# effect sizes are the variants' own. That rule made two conditions unreachable --
+# a uniform draw without the intersection, and a synthetic-DFE or power draw with
+# it -- which is why it is now set rather than derived. "auto" emits no path
+# segment and reproduces every pre-existing run exactly.
+config.setdefault("require_gtex_partner", paths.LEGACY_REQUIRE_GTEX_PARTNER)
+# Normalised to 'auto' / True / False rather than taken as given, because the
+# string "False" is TRUTHY. If --config ever hands us the unparsed string -- a
+# quoting slip in a launcher, a YAML that wrote the value in quotes -- then
+# `if config[...]` would read False as True and silently run the intersecting arm
+# under the non-intersecting arm's name. The two differ only in this key, so
+# nothing downstream would look wrong.
+_rgp = config["require_gtex_partner"]
+if isinstance(_rgp, str):
+    _rgp_norm = {"auto": paths.LEGACY_REQUIRE_GTEX_PARTNER,
+                 "true": True, "false": False}.get(_rgp.strip().lower())
+    if _rgp_norm is None:
+        raise ValueError(
+            f"require_gtex_partner must be 'auto', True or False, got {_rgp!r}"
+        )
+    config["require_gtex_partner"] = _rgp_norm
+elif isinstance(_rgp, bool):
+    pass
+else:
+    raise ValueError(
+        f"require_gtex_partner must be 'auto', True or False, got {_rgp!r}"
+    )
+if (config["require_gtex_partner"] != paths.LEGACY_REQUIRE_GTEX_PARTNER
+        and config["require_gtex_partner"] and config["neutral_trait_vars"]):
+    # Untested combination: under neutral_trait_vars the causal variant is the
+    # RECIPIENT of a moved effect, so "present in both panels" has to be tested on
+    # the recipient rather than the donor. The code does that, but no run has ever
+    # exercised it, and these categories are not part of the publication set.
+    raise ValueError(
+        "require_gtex_partner=True with neutral_trait_vars=True has never been "
+        "run. The recipient pool does carry the intersection, but nothing "
+        "verifies it end to end -- add a test before enabling this combination."
+    )
 # Categories O and P: keep only this fraction of the NEUTRAL (selco == 0) sites,
 # which is distributionally identical to having run the 8.4e-9 neutral overlay at
 # `neutral_keep_fraction * 8.4e-9` (Poisson thinning) -- see
@@ -508,8 +555,17 @@ onstart:
         for _p in params_record.write_run_params(
                 config, argv=sys.argv, strict=config.get("params_strict", False)):
             print(f"[params] wrote {_p}")
+    except ValueError:
+        # The one failure that is a DELIBERATE refusal rather than an accident:
+        # params_strict=True and the record on disk disagrees on an ANALYSIS key,
+        # i.e. two variants are sharing one output_tag and about to collide.
+        # Swallowing it made params_strict gate nothing at all -- the flag could be
+        # set, the disagreement found, and the run would carry on regardless.
+        raise
     except Exception as e:
-        # A provenance file must never be the thing that kills a pipeline.
+        # Anything else -- a read-only workdir, a full disk -- must never be the
+        # thing that kills a pipeline. Losing the provenance file is bad; losing a
+        # week of DAP-G because we could not write a 4 KB record is worse.
         print(f"[params] WARNING: could not write params file: {e}")
 
 

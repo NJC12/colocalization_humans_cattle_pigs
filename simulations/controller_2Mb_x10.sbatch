@@ -4,9 +4,15 @@
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=1
 #
-# x10 phenotype-scaling controller for one 2 Mb replicate -- category A (human)
-# or category E (cattle baseline from midpoint). Same controller for both; the
-# config + STAGE1_SRC passed in decide the species.
+# THE controller for one 2 Mb replicate, whatever its category or arm.
+#
+# The `x10` in the filename is historical: it was written for the x10
+# phenotype-scaling cell of categories A and E, and is now the controller every
+# round-3 launcher uses -- all fourteen categories (A-P) and all six multiplier
+# cells. Nothing in it is x10-specific; the CONFIGFILE, SEED, STAGE1_SRC and
+# EXTRA_CONFIG passed in decide the species, the category and the arm. It is not
+# renamed because the 20 category-O/P controllers in flight at the time of the
+# publication freeze were launched against this path.
 #
 # The controller runs on `medium` (NOT long, NOT priority): stage 1 (the genetic
 # simulation) is REUSED from the x35 run via stage1_search_dirs, so NO real
@@ -20,14 +26,17 @@
 # finishes.
 #
 # Run AS A SLURM JOB (no login-node tmux). Parameterized via --export environment
-# variables set by submit_2Mb_x10.sh (A) / submit_2Mb_x10_E.sh (E):
-#   CONFIGFILE  - config/human_2Mb_x10.yaml (A) or
-#                 config/cattle_baseline_from_midpoint_2Mb_x10.yaml (E)
+# variables set by whichever launcher submits it -- currently
+# submit_2Mb_r3_cmaf_fm001.sh, submit_2Mb_r3_x20_psamp_fm001.sh,
+# submit_2Mb_r3_cmaf01_control.sh and submit_2Mb_r3_cmaf_replicates.sh:
+#   CONFIGFILE  - this category's config, e.g. config/human_2Mb_g5t20_r3.yaml
 #   SEED        - this replicate's stage1_seed / stage2_seed
-#   WD          - this replicate's x10 workdir
-#   PD          - this replicate's x10 publishdir
-#   STAGE1_SRC  - the x35 stage-1 dir to reuse (this replicate's A{N}/ or E{N} stage1 dir)
-#   EXTRA_CONFIG- optional extra --config tokens (empty for A and E)
+#   WD          - this replicate's workdir for THIS arm
+#   PD          - this replicate's publishdir (recorded in the params files;
+#                 nothing in the pipeline reads it -- there is no publish rule)
+#   STAGE1_SRC  - the stage-1 dir to reuse, or empty to build stage 1 here
+#   EXTRA_CONFIG- extra --config tokens; this is where the arm is specified
+#                 (floors, trait counts, sampling scheme, pairing rule)
 
 set -euo pipefail
 REPO=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake

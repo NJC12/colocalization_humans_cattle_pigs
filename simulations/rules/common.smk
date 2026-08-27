@@ -95,6 +95,14 @@ rule stage2_split_pheno:
             "--synthetic_dfe_effects True"
             if config.get("synthetic_dfe_effects", False) else ""
         ),
+        # Whether a central causal locus must segregate in the GTEx panel to be
+        # drawn. Emits nothing at "auto" -- the derived rule this key replaced --
+        # so the shell command for every pre-existing run is byte-identical. Same
+        # discipline as synthetic_flag, sampling_flag and thin_flag below.
+        partner_flag       = (
+            "" if config["require_gtex_partner"] == "auto" else
+            f"--require_gtex_partner {config['require_gtex_partner']}"
+        ),
         # Number of central trait loci (GWAS + shared GTEx). Omit the flag when
         # unset so the script falls back to "use all eligible" (legacy).
         central_flag       = (
@@ -167,13 +175,13 @@ rule stage2_split_pheno:
             --min_maf {params.min_maf} \
             --causal_min_maf {params.causal_min_maf} \
             --length {params.L} \
-            --r2_value 0.2 \
             --gtex_size {params.gtex_size} \
             --seed {params.seed} \
             --out_dir "{params.out_dir}" \
             --already_includes_neutral {params.already_neutral} \
             --neutral_trait_vars {params.neutral_trait_vars} \
             {params.synthetic_flag} \
+            {params.partner_flag} \
             {params.central_flag} \
             --n_flank_gtex_traits {params.n_flank_gtex} \
             {params.n_samples_flag} \

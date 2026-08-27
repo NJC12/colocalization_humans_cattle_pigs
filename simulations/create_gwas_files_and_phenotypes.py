@@ -1,14 +1,11 @@
 import tskit
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import pyslim
 import msprime
 import tstrait
 import argparse
 import os
-import subprocess
 import math
 import gzip
 
@@ -27,6 +24,15 @@ def str2bool(s):
     if sl in ('false', '0', 'no', 'n', 'f'):
         return False
     raise argparse.ArgumentTypeError(f'Boolean value expected, got {s!r}')
+
+
+def str2bool_or_auto(s):
+    # As str2bool, plus the sentinel 'auto'. Kept separate rather than folded in
+    # because every other flag in this script is a plain bool and quietly
+    # accepting 'auto' there would hide a typo instead of rejecting it.
+    if isinstance(s, str) and s.strip().lower() == 'auto':
+        return 'auto'
+    return str2bool(s)
 
 def remove_fixed(ts):
     # Also removes triallelic sites
@@ -234,7 +240,9 @@ def get_vars_df(ts, Q_scaling=1.0, times_already_unscaled=False,
             deep = np.maximum(t - handoff_ticks, 0.0) * deep_Q_scaling
             tree['time'] = recent + deep
 
-    tree['maf'] = tree['daf'].apply(lambda x: min([x, 1-x]))
+    # np.minimum, not .apply(min): one vectorised pass instead of a Python call
+    # per site, over every variant in the panel. daf is float and never NaN here.
+    tree['maf'] = np.minimum(tree['daf'], 1.0 - tree['daf'])
     tree['Vs'] = np.abs(tree['selco']) * tree['daf'] * (1-tree['daf'])
     
     return tree
@@ -321,7 +329,7 @@ def causal_eligible(vars_df, pos_lo, pos_hi, causal_min_maf, synthetic=False):
 
 def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
                          min_pool_multiple, seed, maf_by_position=None, label='',
-                         power_plateau=causal_power.NO_PLATEAU):
+                         power_plateau=causal_power.NO_PLATEAU, pool_note=None):
     """Draw `n` causal loci with inclusion probability proportional to GWAS power.
 
     Each candidate's weight is its probability of reaching `sig_p` in a GWAS of
@@ -349,6 +357,12 @@ def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
     weighted sample -- it is those few plus an arbitrary tail -- and silently
     returning it would look exactly like a successful run.
 
+    `pool_note` is appended to that refusal. It exists for one case: under
+    --require_gtex_partner True the pool handed here has already been intersected
+    with the GTEx panel, so the guard counts from a smaller set than the caller's
+    --causal_min_maf alone implies. Every knob the message suggests is the wrong
+    one to reach for first, so the caller says so.
+
     Returns (chosen_rows, diagnostics) where diagnostics covers the WHOLE pool,
     one row per candidate, so the draw is auditable after the fact."""
     if maf_by_position is None:
@@ -369,6 +383,7 @@ def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
             'A draw this concentrated is not a weighted sample. Lower '
             '--sampling_min_power or --sampling_min_pool_multiple, raise '
             '--sampling_gwas_n or the phenotype scaling, or loosen --sampling_sig_p.'
+            + (pool_note or '')
         )
 
     weights = causal_power.saturated_weights(power, power_plateau)
@@ -689,7 +704,6 @@ def get_arguments():
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--gwas_scaling', type=int)
     parser.add_argument('--gtex_scaling', type=int)
-    parser.add_argument('--r2_value', type=float) # Note to self: I think I no longer use this. Confirm, then delete.
     parser.add_argument('--Q_scaling', type=float, required=True, help='The stage-1 SLiM rescaling factor (config key Q_scaling; cattle 0.01, human 10). Selection coefficients recorded in the tree sequence are Q_scaling * the real value and are divided back by get_vars_df, which sets beta = sqrt(|selco|) * scaling. Applies to whichever single species this invocation runs.')
     parser.add_argument('--handoff_ticks', type=float, required=False, default=None,
                         help='Cattle deep-history handoff: number of ticks between the '
@@ -757,6 +771,23 @@ def get_arguments():
                              '--neutral_trait_vars, which is a different neutral model: '
                              'there the genome is still the output of a run under '
                              'selection and only the assignment of effects is neutral.')
+    parser.add_argument('--require_gtex_partner', type=str2bool_or_auto, required=False,
+                        default='auto',
+                        help='Must a central causal locus segregate in the GTEx panel to '
+                             'be eligible? True intersects the causal pool with that '
+                             'panel and re-tests --causal_min_maf there, so the GWAS and '
+                             'shared-GTEx causal sets are the SAME positions and every '
+                             'GWAS locus has a partner by construction. False does not '
+                             'intersect: the shared GTEx set is whichever drawn loci that '
+                             'panel carries, the remaining central GTEx slots are topped '
+                             'up uniformly, and a GWAS locus with no partner cannot '
+                             'colocalize -- read {h,c}gwas_trait_partners_*.tsv rather '
+                             'than inferring pairing from trait names. "auto" (the '
+                             'default) is the rule this flag replaced: intersect iff the '
+                             'draw is uniform AND the effect sizes are the variants own. '
+                             'That rule made two conditions unreachable -- a uniform draw '
+                             'without the intersection and a synthetic-DFE or power draw '
+                             'with it -- which is why the pairing is now set, not derived.')
     parser.add_argument('--n_central_traits', type=int, required=False, default=None, help='Number of central trait loci to keep -- these are the GWAS traits AND the shared GTEx traits (same positions). Drawn from the eligible causal pool (selco != 0, MAF >= --causal_min_maf, central [5e5, L-5e5] window). Randomly subsampled (seeded by --seed) when the pool is larger; all are used when fewer exist. Default None = use all eligible (legacy behavior).')
     parser.add_argument('--causal_sampling', choices=('uniform', 'power'), required=False,
                         default='uniform',
@@ -808,7 +839,6 @@ if __name__ == '__main__':
     args = get_arguments()
     gwas_scaling = args.gwas_scaling
     gtex_scaling = args.gtex_scaling
-    r2_value = args.r2_value
     min_maf = args.min_maf
     # The floor for causative-variant eligibility, and the one that names the
     # output dir. min_maf is only passed through to the GWAS downstream; it has
@@ -1044,20 +1074,48 @@ if __name__ == '__main__':
             'causative.'
         )
 
-    # Whether the central GTEx trait set is built by select_gtex_topup (the GWAS
-    # loci that GTEx happens to carry, plus a uniform fill) rather than being the
-    # GWAS set verbatim. Power sampling has always worked that way, because it does
-    # not intersect its pool with the GTEx panel. The synthetic-DFE categories do
-    # too, in BOTH schemes, because that is the model as specified: draw 50 in the
-    # GWAS panel, whichever of them segregate in GTEx become causal there, top the
-    # rest up.
+    # Must a central causal locus segregate in the GTEx panel to be eligible?
     #
-    # Consequence, and it is not a bug: a GWAS locus the GTEx panel lacks has no
-    # partner and cannot colocalize, while under uniform+non-synthetic every locus
-    # has one by construction. Both scorers currently count a partnerless locus as
-    # a colocalization failure, so read {panel}_trait_partners_*.tsv before
-    # comparing a rate from here against one from a uniform non-synthetic arm.
-    topup_gtex = power_sampling or synthetic_effects
+    # True  -- the pool is intersected with that panel and re-tested against
+    #          causal_min_maf there, so the GWAS and shared-GTEx causal sets are the
+    #          same positions and every GWAS locus has a partner by construction.
+    # False -- it is not, so the central GTEx set is built by select_gtex_topup (the
+    #          GWAS loci GTEx happens to carry, plus a uniform fill) and a GWAS
+    #          locus GTEx lacks has NO partner and cannot colocalize.
+    #
+    # `auto` is the rule this used to be, before it was a knob:
+    #
+    #     topup_gtex = power_sampling or synthetic_effects
+    #
+    # i.e. intersect iff the draw is uniform AND the effect sizes are the variants'
+    # own. That was a reasonable default and a bad constraint, because it made two
+    # experimental conditions inexpressible -- a uniform draw WITHOUT the
+    # intersection, and a synthetic-DFE or power draw WITH it -- and both are arms
+    # of a design that varies the pairing on purpose. Deriving it also meant one
+    # value of --causal_sampling silently changed what --synthetic_dfe_effects did.
+    #
+    # Whichever way it resolves, read {panel}_trait_partners_*.tsv rather than
+    # inferring pairing from trait-name equality: both scorers count a partnerless
+    # locus as a colocalization failure, and as a false positive if it colocalizes
+    # with a neighbour.
+    auto_require_partner = not (power_sampling or synthetic_effects)
+    if args.require_gtex_partner == 'auto':
+        require_gtex_partner = auto_require_partner
+    else:
+        require_gtex_partner = bool(args.require_gtex_partner)
+    topup_gtex = not require_gtex_partner
+    print(f'GTEx partner required of every causal locus: {require_gtex_partner} '
+          f'(--require_gtex_partner {args.require_gtex_partner!r}; the derived rule '
+          f'for this scheme would give {auto_require_partner})')
+    if require_gtex_partner and power_sampling:
+        # The pool the power weights are computed over is now the INTERSECTED one,
+        # so the pool-adequacy guard below counts from a smaller set and can refuse
+        # a run that the non-intersecting version would have accepted. Say so here,
+        # because the guard's own message names --sampling_* and --causal_min_maf
+        # and would otherwise send the reader to the wrong knob.
+        print('NOTE: --require_gtex_partner True under --causal_sampling power means '
+              'the detection-power weights are computed over the GTEx-intersected '
+              'pool, so the pool-adequacy guard is stricter than at False.')
 
     # {position: drawn selection coefficient}, per species, under
     # --synthetic_dfe_effects. Built over every pool that can yield a trait locus
@@ -1118,9 +1176,12 @@ if __name__ == '__main__':
             # would keep a site the GTEx panel carries but is monomorphic for, and
             # an effect there is not an eQTL. Implied at any non-zero floor, so
             # this is inert for every run that predates the default change.
-            pool = pool[pool.apply(
-                lambda row: gtex_maf[row.position] > 0
-                and gtex_maf[row.position] >= causal_min_maf, axis=1)]
+            # .map() rather than apply(axis=1): the latter builds a Series per row
+            # and upcasts it to a common dtype, which is both slow and a needless
+            # chance for `position` to arrive as something other than the float64
+            # the dict is keyed by. This path is hot for the paired arm.
+            _m = pool['position'].map(gtex_maf)
+            pool = pool[(_m > 0) & (_m >= causal_min_maf)]
             pool_counts['causal_eligible'] = int(pool.shape[0])
             print(f'Number of causative {species_label} variants ({selco_clause}MAF >= '
                   f'{causal_min_maf} in the GWAS sample): '
@@ -1138,17 +1199,19 @@ if __name__ == '__main__':
         print(f'Causal sampling: power-weighted (pi-PS), sampling_gwas_n={sampling_n:g} '
               f'(realized GWAS panel {realized_gwas_n}), sig_p={args.sampling_sig_p:g}')
     if run_hums:
-        # Only the GTEx-intersecting path needs this, and building it costs a full
-        # iterrows() pass over ~200k variants.
+        # Only the GTEx-intersecting path needs this, so it is built only there --
+        # it is a pass over ~200k variants. dict(zip(col, col)) rather than
+        # iterrows(): same result, ~100x faster, and the same idiom this file
+        # already uses for the redistribution maps below.
         hgtex_maf_dict = ({} if topup_gtex else
-                          {var.position: var.maf for _, var in hgtex_vars.iterrows()})
+                          dict(zip(hgtex_vars['position'], hgtex_vars['maf'])))
         if synthetic_effects:
             hsynth = synthetic_maps(hgwas_vars, hgtex_vars, args.seed + 6*10**7)
         hcausative_maf01 = central_pool(hgwas_vars, hgtex_vars, hgtex_maf_dict,
                                         'human', hsynth)
     if run_cows:
         cgtex_maf_dict = ({} if topup_gtex else
-                          {var.position: var.maf for _, var in cgtex_vars.iterrows()})
+                          dict(zip(cgtex_vars['position'], cgtex_vars['maf'])))
         if synthetic_effects:
             csynth = synthetic_maps(cgwas_vars, cgtex_vars, args.seed + 7*10**7)
         ccausative_maf01 = central_pool(cgwas_vars, cgtex_vars, cgtex_maf_dict,
@@ -1184,9 +1247,8 @@ if __name__ == '__main__':
                              & (gwas_vars['position'] < trait_pos_hi)]
         if not topup_gtex:
             pool = pool.loc[pool['position'].isin(gtex_vars['position'])]
-            pool = pool[pool.apply(
-                lambda row: gtex_maf[row.position] > 0
-                and gtex_maf[row.position] >= causal_min_maf, axis=1)]
+            _m = pool['position'].map(gtex_maf)
+            pool = pool[(_m > 0) & (_m >= causal_min_maf)]
         return pool
 
     if args.neutral_trait_vars:
@@ -1231,13 +1293,26 @@ if __name__ == '__main__':
     print('Selecting trait loci')
     power_diag = {}
     partners = {}
+    # Handed to the pool-adequacy guard so its refusal names the real culprit. At
+    # --require_gtex_partner True the pool it counts has already lost every variant
+    # the GTEx panel does not carry, which at causal_min_maf 0 is most of the rare
+    # tail of an 8,000-person GWAS panel -- so the guard can refuse a run that the
+    # non-intersecting arm accepts, and every knob it suggests is the wrong one.
+    power_pool_note = (
+        ' NOTE: this pool was intersected with the GTEx panel because '
+        '--require_gtex_partner is True; at False it would be '
+        f"{pool_counts.get('causal_eligible_gwas_sample', 'more')} variants before "
+        'the power filter. If the pairing is not the thing you are varying, that is '
+        'the knob to change.'
+    ) if require_gtex_partner else None
     if run_hums:
         if power_sampling:
             hcausative_maf01, power_diag['hgwas'] = select_central_power(
                 hcausative_maf01, args.n_central_traits, gwas_scaling, sampling_n,
                 args.sampling_sig_p, args.sampling_min_power, args.sampling_min_pool_multiple,
                 args.seed, maf_by_position=hpower_maf, label='human',
-                power_plateau=args.sampling_power_plateau)
+                power_plateau=args.sampling_power_plateau,
+                pool_note=power_pool_note)
         else:
             hcausative_maf01 = subsample_traits(hcausative_maf01, args.n_central_traits, args.seed)
         if topup_gtex:
@@ -1273,7 +1348,8 @@ if __name__ == '__main__':
                 ccausative_maf01, args.n_central_traits, gwas_scaling, sampling_n,
                 args.sampling_sig_p, args.sampling_min_power, args.sampling_min_pool_multiple,
                 args.seed + 2*10**7, maf_by_position=cpower_maf, label='cattle',
-                power_plateau=args.sampling_power_plateau)
+                power_plateau=args.sampling_power_plateau,
+                pool_note=power_pool_note)
         else:
             ccausative_maf01 = subsample_traits(ccausative_maf01, args.n_central_traits, args.seed + 2*10**7)
         if topup_gtex:
@@ -1373,15 +1449,25 @@ if __name__ == '__main__':
         for name, diag in power_diag.items():
             diag.to_csv(f'{sim_dir}/{name}_causal_power_{suffix}', sep='\t', index=False)
 
-    # The partner table is gated on TOP-UP, not on power sampling. It used to be
-    # gated on the latter because the two coincided; they stopped coinciding when
-    # the drawn-DFE arms (H, I) began topping up under uniform sampling too. Those
-    # are precisely the runs where a GWAS locus can have no GTEx trait at its causal
-    # variant, and where both scorers would otherwise read "no eQTL to find" as
-    # "colocalization failed" -- opposite results. Where the GTEx set is intersected
-    # instead, every locus has a partner by construction and nothing is written, so
-    # a plain uniform run's output directory is unchanged.
-    if topup_gtex:
+    # Written whenever the GTEx set is topped up, OR whenever the pairing rule was
+    # stated explicitly.
+    #
+    # The top-up half is the original reason: those are the runs where a GWAS locus
+    # can have no GTEx trait at its causal variant, and where both scorers would
+    # otherwise read "no eQTL to find" as "colocalization failed" -- opposite
+    # results. (The gate used to be `power_sampling`, which stopped coinciding with
+    # top-up when the drawn-DFE arms began topping up under uniform sampling too.)
+    #
+    # The explicit half is new, and it is why the gate is on args rather than on the
+    # resolved value: where the pool IS intersected the table is all-True, which
+    # says nothing a reader could not deduce -- but only if they know the arm
+    # intersected. An ABSENT file is ambiguous between "intersected, so all-True"
+    # and "topped up, but written by a version that did not emit this". Any run that
+    # names its pairing rule therefore also records the result, so a scorer never
+    # has to infer pairing from the file's absence. Gating on `args` rather than on
+    # `require_gtex_partner` keeps every pre-existing 'auto' invocation's output
+    # directory byte-identical.
+    if topup_gtex or args.require_gtex_partner != 'auto':
         for name, tbl in partners.items():
             tbl.to_csv(f'{sim_dir}/{name}_trait_partners_{suffix}', sep='\t', index=False)
 
@@ -1505,6 +1591,12 @@ if __name__ == '__main__':
             'n_flank_gtex_traits': args.n_flank_gtex_traits,
             'neutral_trait_vars': args.neutral_trait_vars,
             'synthetic_dfe_effects': args.synthetic_dfe_effects,
+            # The UNRESOLVED value ('auto' / True / False), not the resolved bool.
+            # This dict is config-keyed so its stage2_uid matches the one
+            # params_record computes from the config, and the config holds 'auto'.
+            # The resolved bool is in the stage-2 log, and is recoverable from
+            # causal_sampling + synthetic_dfe_effects anyway.
+            'require_gtex_partner': args.require_gtex_partner,
             'neutral_keep_fraction': neutral_keep_fraction,
             'already_includes_neutral': args.already_includes_neutral,
             'L': args.length,
@@ -1534,5 +1626,5 @@ if __name__ == '__main__':
 # Not included in final analysis
 
 # Too soon to tell
-# python ../create_gwas_files_and_phenotypes.py --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --cattle_ts_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24.full.ts' --cattle_m4_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24.m4_marks.tsv' --out_dir '/Users/noah/tmp/selsims/outdir/'
-# python ../create_gwas_files_and_phenotypes.py --gtex_size 50000 --gwas_scaling 35 --gtex_scaling 35 --r2_value 0.2 --min_maf 0.01 --human_ts_file '/Users/noah/tmp/selsims/largesim/hts_19930224_large.ts' --out_dir '/Users/noah/tmp/selsims/largesim/outputs/' --already_includes_neutral True
+# python ../create_gwas_files_and_phenotypes.py --gwas_scaling 35 --gtex_scaling 35 --min_maf 0.01 --cattle_ts_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24.full.ts' --cattle_m4_file '/Users/noah/tmp/selsims/revision_farm_selection_mult_100_gen_23_muts_26_bottlenecked_sd24.m4_marks.tsv' --out_dir '/Users/noah/tmp/selsims/outdir/'
+# python ../create_gwas_files_and_phenotypes.py --gtex_size 50000 --gwas_scaling 35 --gtex_scaling 35 --min_maf 0.01 --human_ts_file '/Users/noah/tmp/selsims/largesim/hts_19930224_large.ts' --out_dir '/Users/noah/tmp/selsims/largesim/outputs/' --already_includes_neutral True
