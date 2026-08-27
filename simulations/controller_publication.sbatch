@@ -39,7 +39,7 @@
 #   UNTIL       - optional --until target (e.g. stage2)
 
 set -euo pipefail
-REPO="${REPO:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake_publication}"
+REPO="${REPO:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/publication_repo/simulations}"
 SNAKEMAKE="${SNAKEMAKE:-/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake}"
 
 : "${CONFIGFILE:?}" "${SEED:?}" "${WD:?}" "${PD:?}" "${JOBS:?}"

@@ -14,7 +14,7 @@
 # Roots are ${VAR:-default} so the whole thing can be pointed at a sandbox, which
 # is how the stage-1 verification pass runs. The round-3 launchers hardcode them.
 
-REPO="${REPO:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake_publication}"
+REPO="${REPO:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/publication_repo/simulations}"
 SCRATCH_ROOT="${SCRATCH_ROOT:-/n/scratch/users/n/njc12/snakemake/farm_sims_for_publication}"
 PUBLISH_ROOT="${PUBLISH_ROOT:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/farm_sims_for_publication}"
 CELL="${CELL:-g5t20}"
