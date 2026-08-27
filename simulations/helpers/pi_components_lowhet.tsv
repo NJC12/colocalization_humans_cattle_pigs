@@ -1,0 +1,11 @@
+label	species	ts_file	pi_total	pi_neutral	pi_selected	selected_share	n_sites	n_neutral	n_selected	keep_fraction_for_half_pi
+A1	human	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/A1/stage1/hts_11.ts	0.000136803	9.80965e-05	3.87066e-05	0.282936	38174	23164	15010	0.302712
+A2	human	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/A2/stage1/hts_12.ts	0.000162871	0.000116184	4.66873e-05	0.286651	37848	22978	14870	0.29908
+A3	human	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/A3/stage1/hts_13.ts	0.000167126	0.00011954	4.75863e-05	0.284733	38224	23242	14982	0.300961
+A4	human	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/A4/stage1/hts_14.ts	0.000180105	0.000130744	4.9361e-05	0.274068	38479	23343	15136	0.31123
+A5	human	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/A5/stage1/hts_15.ts	0.000185805	0.000135891	4.99144e-05	0.268639	38452	23563	14889	0.316343
+E1	cattle	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/E1/stage1/farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_51.full.ts	0.000143395	0.000101182	4.22136e-05	0.294386	1366	925	441	0.291397
+E2	cattle	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/E2/stage1/farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_52.full.ts	0.000155847	0.000112224	4.36232e-05	0.27991	1382	940	442	0.305642
+E3	cattle	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/E3/stage1/farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_53.full.ts	0.00014651	0.00010364	4.28703e-05	0.29261	1306	890	416	0.293176
+E4	cattle	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/E4/stage1/farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_54.full.ts	0.000145324	0.00010183	4.34947e-05	0.299294	1459	994	465	0.286433
+E5	cattle	/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20_cmaf_0.001/E5/stage1/farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_55.full.ts	0.000138309	9.5745e-05	4.25639e-05	0.307745	1222	812	410	0.277722

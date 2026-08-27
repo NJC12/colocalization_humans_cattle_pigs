@@ -44,6 +44,12 @@ import stdpopsim
 # (human_simulation_o2.py). Held here as a constant rather than a CLI flag: the
 # whole point of this arm is that its demography is A's, so making it settable
 # would only create a way for the two to diverge unnoticed.
+#
+# The same three constants are now also in helpers/human_demography.py, which is
+# where human_simulation_o2.py reads them and where the AFR arm (category J)
+# gets its population from. They are duplicated rather than imported for the
+# reason above: this arm's identity is "A's demography, no selection", and
+# H should not follow A if A's population is ever changed.
 DEMOGRAPHIC_MODEL = "OutOfAfrica_2T12"
 SPECIES = "HomSap"
 SAMPLED_POPULATION = "EUR"

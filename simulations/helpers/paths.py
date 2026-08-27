@@ -24,6 +24,8 @@ stages 3-5 separate too.
 
 import os
 
+from . import human_demography
+
 
 # ---------- causal-variant MAF floor ----------
 
@@ -111,6 +113,21 @@ def causal_maf_segment(cfg):
 # no path segment so every existing path stays reachable.
 LEGACY_CAUSAL_SAMPLING = "uniform"
 
+#: ``sampling_power_plateau`` value that leaves the weights alone. Power is
+#: already bounded by 1, so this is a no-op and every pre-existing arm sits here.
+NO_POWER_PLATEAU = 1.0
+
+
+def power_plateau_token(value):
+    """Render a plateau the one way every path component must render it.
+
+    Drops the decimal point, matching how the arm names already write floors
+    (``cmaf001`` for 0.001, ``fm01`` for 0.01): 0.5 -> ``05``, 0.25 -> ``025``.
+    Keeping the dot out matters -- ``stage2_run_tag`` is dot-joined and
+    ``summarize_coloc.read_params`` prefix-globs the result.
+    """
+    return f"{float(value):g}".replace(".", "")
+
 
 def causal_sampling(cfg):
     """How the central causal loci are drawn: ``"uniform"`` or ``"power"``.
@@ -141,7 +158,93 @@ def causal_sampling_segment(cfg):
     """
     if causal_sampling(cfg) == LEGACY_CAUSAL_SAMPLING:
         return ""
-    return f".psamp_{int(cfg['sampling_gwas_n'])}"
+    seg = f".psamp_{int(cfg['sampling_gwas_n'])}"
+    # The plateau is the exception to "headline knob only". It changes WHICH
+    # variants are drawn, not just how they are described, so a saturated and an
+    # unsaturated run at the same sampling_gwas_n are different simulations and
+    # must not share a directory. sampling_sig_p can share one because the
+    # provenance guard catches it; this cannot, because the whole point of the
+    # arm is to sit beside its unsaturated twin.
+    plateau = float(cfg.get("sampling_power_plateau", NO_POWER_PLATEAU))
+    if plateau != NO_POWER_PLATEAU:
+        seg += f"_sat{power_plateau_token(plateau)}"
+    return seg
+
+
+# ---------- number of trait loci ----------
+
+#: The central-trait count every run through round 3 used. Suppressed in the path
+#: for the same reason LEGACY_CAUSAL_MIN_MAF is: it is a fact about what is
+#: already on disk, so those paths stay reachable.
+LEGACY_N_CENTRAL_TRAITS = 50
+
+
+def trait_count_segment(cfg):
+    """Path segment marking a non-historical central-trait count, else ``""``.
+
+    ``n_central_traits`` determines stage-2 CONTENT -- it is how many causal loci
+    the arm has -- but unlike causal_min_maf it appears in no filename. The
+    stage-2 outputs are named ``gwas_G_gtex_T_maf_M/`` and the vars tables
+    ``{panel}_vars_gwas_G_gtex_T_maf_M.tsv``, none of which carries it. So two
+    runs differing only in the trait count would write the same filenames, and in
+    the FLAT archive layout (``<arm>/<replicate>/<file>``) they would land on top
+    of each other with nothing to tell them apart.
+
+    Carries the central count only, matching causal_sampling_segment's rule of
+    "the headline knob, and let the provenance guard catch the rest":
+    ``n_flank_gtex_traits`` is in params_record.STAGE2_KEYS, so a run that
+    disagrees on it is refused rather than silently reusing the wrong phenotypes.
+    """
+    n = cfg.get("n_central_traits")
+    if n is None or int(n) == LEGACY_N_CENTRAL_TRAITS:
+        return ""
+    return f".ntr_{int(n)}"
+
+
+# ---------- neutral-variant thinning (categories O and P) ----------
+
+#: ``neutral_keep_fraction`` value that keeps every neutral site, i.e. the whole
+#: neutral overlay as simulated. Every run before categories O and P sits here and
+#: emits no path segment, so no pre-existing path moves.
+NO_NEUTRAL_THINNING = 1.0
+
+
+def neutral_keep_fraction(cfg):
+    """Fraction of ``selco == 0`` sites the run keeps. 1.0 = the whole overlay.
+
+    Neutral mutations are a Poisson process laid down on branches the forward
+    simulation already fixed -- ``human_simulation_o2.py``'s 8.4e-9 overlay for the
+    human arms, ``create_gwas_files_and_phenotypes.add_neutral``'s for the cattle
+    ones. Dropping each neutral site independently with probability ``1 - k`` is
+    therefore EXACTLY the same distribution as running that overlay at
+    ``k * 8.4e-9`` (Poisson thinning), which is what lets categories O and P reuse
+    A's and E's stage-1 tree sequences instead of re-simulating at a lower rate.
+
+    Only the neutral class is touched. ``causal_eligible``, ``flank_eligible``,
+    ``select_central_power`` and ``select_gtex_topup`` all select on ``selco != 0``,
+    so the causal pools, the power weights, the drawn positions and the trait
+    partner tables are identical to the un-thinned arm at the same seed.
+    """
+    return float(cfg.get("neutral_keep_fraction", NO_NEUTRAL_THINNING))
+
+
+def neutral_thin_segment(cfg):
+    """Path segment marking a thinned neutral class, else ``""``.
+
+    Thinning changes stage-2 CONTENT -- it is the variant set every panel, every
+    SBAMS and every GWAS is built from -- but like ``n_central_traits`` it appears
+    in no filename: the vars tables are named ``{panel}_vars_gwas_G_gtex_T_maf_M``
+    whether or not the neutral class was thinned. Without a segment an O run and an
+    A run could be pointed at the same stage 2 by ``stage2_search_dirs``, and in the
+    flat archive layout their files would be indistinguishable.
+
+    The token follows ``power_plateau_token``'s rule -- drop the decimal point, the
+    way the arm names already write floors -- so 0.375 renders ``nkeep_0375``.
+    """
+    k = neutral_keep_fraction(cfg)
+    if k == NO_NEUTRAL_THINNING:
+        return ""
+    return f".nkeep_{power_plateau_token(k)}"
 
 
 # ---------- output tag (for parallel result sets, e.g. r2=0.25 vs r2=0.75) ----------
@@ -168,12 +271,28 @@ def _tagged_dir(name, tag):
 def stage1_human_ts(cfg):
     """Top-level human tree sequence (one file feeds stage 2 directly).
 
-    Matches the actual filename produced by ``human_simulation_o2.py``:
-    ``hts_{seed}.ts``. The total individual count and SLiM scaling are
-    now controlled by the ``--n_samples`` and ``--Q`` CLI flags rather
-    than by selecting a separate script.
+    Matches the actual filename produced by ``human_simulation_o2.py``. The
+    total individual count and SLiM scaling are controlled by the
+    ``--n_samples`` and ``--Q`` CLI flags rather than by selecting a separate
+    script, and the sampled population by ``--population``.
+
+    ``hts_{seed}.ts`` for EUR under the default demographic model -- every human
+    tree sequence written before either key was a parameter, so A/B/C/D stay
+    adoptable -- ``hts_{pop}_{seed}.ts`` for another population of that model
+    (category J: ``hts_AFR_101.ts``), and ``hts_{tag}_{pop}_{seed}.ts`` for
+    another model entirely (category M: ``hts_finwang_FIN_131.ts``). Both the
+    model and the population are in the name because stage-1 adoption matches on
+    filename plus seed -- and for human names the seed half never fires, so the
+    filename is the whole guard. See helpers/human_demography.py.
+
+    ``.get`` rather than ``[...]``: helpers/tests feeds raw config YAML that has
+    not been through the Snakefile's ``setdefault``, and no config written
+    before category J carries either key at all.
     """
-    return f"hts_{cfg['stage1_seed']}.ts"
+    model = cfg.get("demographic_model") or human_demography.DEFAULT_MODEL
+    population = (cfg.get("population")
+                  or human_demography.default_population(model))
+    return human_demography.stage1_ts_name(population, cfg["stage1_seed"], model)
 
 
 def stage1_human_neutral_ts(cfg):
@@ -335,7 +454,9 @@ def stage2_run_tag(cfg):
     """Per-run tag that pins stage-2 outputs to the upstream stage-1 file
     (so changing stage1_seed gets a fresh stage-2 dir), plus the causal MAF
     floor when it is not the historical 0.01, plus the causal sampling scheme
-    when it is not the historical uniform draw.
+    when it is not the historical uniform draw, plus the central-trait count
+    when it is not the historical 50, plus the neutral keep fraction when the
+    neutral class was thinned.
 
     This is the sole namespace for stage2_dir, stage3_dir, stage4_dir and
     stage5_dir, and for the ``previous_workdirs`` adoption in the Snakefile, so
@@ -343,7 +464,8 @@ def stage2_run_tag(cfg):
     once -- including ``geno.sbams.gz``, the file every DAP-G job reads.
     """
     base = os.path.splitext(os.path.splitext(stage1_full_filename(cfg))[0])[0]
-    return base + causal_maf_segment(cfg) + causal_sampling_segment(cfg)
+    return (base + causal_maf_segment(cfg) + causal_sampling_segment(cfg)
+            + trait_count_segment(cfg) + neutral_thin_segment(cfg))
 
 
 def stage2_dir(cfg):

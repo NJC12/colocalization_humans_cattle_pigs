@@ -1,0 +1,1428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulation comparison dashboard</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #16191d;
+  --ink-2: #4b5563;
+  --ink-3: #7b8494;
+  --line: #e3e6ea;
+  --line-2: #cfd4db;
+  --accent: #1f5fbf;
+  --accent-soft: #e8f0fb;
+  --warn: #9a5b00;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 13px; margin: 0; font-weight: 620; }
+a { color: var(--accent); }
+
+/* ---------- header + global controls ---------------------------------- */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px 0;
+  position: sticky; top: 0; z-index: 30;
+}
+.titlerow { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.subtle { color: var(--ink-3); font-size: 11.5px; }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 6px 18px;
+  padding: 9px 0 4px;
+}
+.ctl { display: flex; align-items: center; gap: 7px; }
+.ctl > label.lbl {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--ink-3); font-weight: 600; white-space: nowrap;
+}
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.seg label {
+  padding: 3px 9px; font-size: 12px; cursor: pointer; background: var(--surface);
+  border-right: 1px solid var(--line);
+  color: var(--ink-2); user-select: none; white-space: nowrap;
+}
+.seg label:last-child { border-right: 0; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg input:checked + span { }
+.seg label:has(input:checked) { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.seg label:hover { background: #f0f2f5; }
+.seg label:has(input:checked):hover { background: var(--accent-soft); }
+select, input[type=number], input[type=search] {
+  font: inherit; font-size: 12px; padding: 3px 6px;
+  border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink);
+}
+input[type=range] { width: 110px; vertical-align: middle; }
+.plotbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 0 10px; border-top: 1px dashed var(--line);
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--line-2); border-radius: 999px;
+  padding: 3px 11px 3px 9px; font-size: 12px; cursor: pointer; background: var(--surface);
+  color: var(--ink-2); user-select: none;
+}
+.chip:hover { border-color: var(--ink-3); }
+.chip input { margin: 0; accent-color: var(--accent); }
+.chip:has(input:checked) { background: var(--accent-soft); border-color: #b9d0ee; color: var(--accent); font-weight: 600; }
+.btn {
+  font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-2); cursor: pointer;
+}
+.btn:hover { border-color: var(--ink-3); color: var(--ink); }
+
+/* ---------- layout ----------------------------------------------------- */
+main { display: flex; align-items: flex-start; gap: 14px; padding: 14px 16px 40px; }
+#tablepane {
+  flex: 0 0 var(--tablew, 600px);
+  /* --headh is measured from the header after every render: the control rows
+     wrap differently at different widths, so a hardcoded offset would either
+     overlap the header or leave a gap. */
+  position: sticky; top: calc(var(--headh, 168px) + 14px);
+  max-height: calc(100vh - var(--headh, 168px) - 32px);
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden;
+}
+.panehead { padding: 9px 11px 8px; border-bottom: 1px solid var(--line); }
+.panehead .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#tablewrap { overflow: auto; }
+table.simtable { border-collapse: collapse; width: 100%; font-size: 11px; table-layout: fixed; }
+table.simtable th {
+  position: sticky; top: 0; background: var(--surface); z-index: 2;
+  text-align: right; font-weight: 600; color: var(--ink-2);
+  padding: 5px 4px; border-bottom: 1px solid var(--line-2); cursor: pointer; white-space: nowrap;
+}
+table.simtable th:first-child, table.simtable td:first-child { text-align: left; }
+table.simtable th.left, table.simtable td.left { text-align: left; }
+table.simtable td {
+  padding: 4px 4px; border-bottom: 1px solid var(--line); text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+table.simtable tr { cursor: pointer; }
+table.simtable tbody tr:hover { background: #f7f9fc; }
+table.simtable tbody tr.shown { background: #f2f7ff; }
+table.simtable tbody tr.shown td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.catdot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+th .arrow { color: var(--accent); font-size: 9px; }
+.armcell { max-width: 165px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
+
+#rightcol { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+#boxes { display: grid; gap: 14px; min-width: 0; }
+#comparepanel:empty { display: none; }
+.cmp {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 9px 12px 11px;
+}
+.cmp .hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+/* This chart is meant to be read across many groups at once, so unlike the
+   per-box charts it is not capped at a comfortable single-column width. */
+svg.chart.wide { max-width: none; }
+.lgdrow { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+.lgd { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-2); }
+.lgd i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.lgd b { color: var(--ink); font-weight: 650; }
+.box {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  min-width: 0; display: flex; flex-direction: column;
+}
+.box.active { border-color: #a9c6ee; box-shadow: 0 0 0 2px var(--accent-soft); }
+.boxhead { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.boxhead .toprow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.boxnum {
+  font-size: 11px; font-weight: 700; color: var(--ink-3);
+  border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; cursor: pointer;
+}
+.box.active .boxnum { background: var(--accent); border-color: var(--accent); color: #fff; }
+.selrow { display: flex; flex-wrap: wrap; gap: 5px 12px; align-items: center; }
+.selrow .ctl > label.lbl { font-size: 10px; }
+.simline { font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
+.simline .k { color: var(--ink-3); }
+.simline b { color: var(--ink); font-weight: 600; }
+.boxbody { padding: 4px 10px 12px; }
+.plotblock { padding: 9px 0 4px; border-top: 1px solid var(--line); }
+.plotblock:first-child { border-top: 0; }
+.plottitle { font-size: 11px; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.045em; margin-bottom: 2px; }
+.plotnote { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
+/* The viewBox scales with the box, so a one-up layout would otherwise blow the
+   axis text up to headline size; the cap keeps every chart at a legible size
+   and lets wide boxes give their extra room to the tables. */
+svg.chart { display: block; width: 100%; max-width: 680px; height: auto; }
+.empty { padding: 26px 12px; text-align: center; color: var(--ink-3); font-size: 12px; }
+.warnline { color: var(--warn); font-size: 11.5px; }
+
+table.kv { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+table.kv td { padding: 2px 6px 2px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.kv td.v { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.kv tr:last-child td { border-bottom: 0; }
+table.res { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+table.res th { text-align: right; font-weight: 600; color: var(--ink-3); padding: 2px 6px 3px 0; border-bottom: 1px solid var(--line-2); }
+table.res th:first-child { text-align: left; }
+table.res td { padding: 2px 6px 2px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; text-align: right; }
+table.res td:first-child { text-align: left; color: var(--ink-2); }
+table.res tr:last-child td { border-bottom: 0; }
+
+#tip {
+  position: fixed; z-index: 100; pointer-events: none; opacity: 0;
+  background: #101418ee; color: #fff; font-size: 11.5px; line-height: 1.35;
+  padding: 5px 8px; border-radius: 5px; max-width: 260px; white-space: pre-line;
+  transition: opacity 90ms linear;
+}
+details.defs { margin: 6px 16px 24px; font-size: 12px; color: var(--ink-2); }
+details.defs summary { cursor: pointer; color: var(--accent); }
+details.defs ul { margin: 6px 0 0; padding-left: 18px; }
+details.defs li { margin-bottom: 3px; }
+</style>
+</head>
+<body data-palette="">
+<header>
+  <div class="titlerow">
+    <h1>Simulation comparison dashboard</h1>
+    <span class="subtle" id="metaline"></span>
+  </div>
+
+  <div class="controls" id="globalcontrols">
+    <div class="ctl">
+      <label class="lbl" for="nboxes">Comparisons</label>
+      <input type="number" id="nboxes" min="1" max="8" step="1" style="width:52px">
+    </div>
+    <div class="ctl">
+      <label class="lbl">eQTL panel</label>
+      <span class="seg" id="segpanel"></span>
+    </div>
+    <div class="ctl">
+      <label class="lbl">RCP cutoff</label>
+      <span class="seg" id="segrcp"></span>
+      <input type="range" id="rcpslider" min="0" max="0.99" step="0.01">
+      <span id="rcpval" class="subtle" style="font-variant-numeric:tabular-nums;width:34px"></span>
+    </div>
+    <div class="ctl">
+      <label class="lbl" for="gwasn">GWAS n <span style="text-transform:none">(significant loci)</span></label>
+      <select id="gwasn"></select>
+    </div>
+    <div class="ctl">
+      <label class="lbl">MAF floor <span style="text-transform:none">(AF plots)</span></label>
+      <span class="seg" id="segfloor"></span>
+    </div>
+    <div class="ctl">
+      <label class="lbl">AF y-axis</label>
+      <span class="seg" id="segafy"></span>
+    </div>
+    <div class="ctl">
+      <label class="chip"><input type="checkbox" id="sharedy"> shared y-axis</label>
+    </div>
+    <div class="ctl">
+      <label class="chip" title="show or hide the table of all simulations"><input type="checkbox" id="showtable"> simulation table</label>
+    </div>
+  </div>
+
+  <div class="plotbar" id="plotbar">
+    <span class="lbl" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600">Plots</span>
+    <span id="plotchips" style="display:contents"></span>
+    <button class="btn" id="allplots" type="button">all</button>
+    <button class="btn" id="noplots" type="button">none</button>
+    <span style="width:1px;height:18px;background:var(--line-2);margin:0 4px"></span>
+    <label class="chip" title="one chart above the boxes: every percentage row, with one bar per compared simulation">
+      <input type="checkbox" id="showcompare"> Outcome comparison plot <span class="subtle" style="font-weight:400">(across boxes)</span>
+    </label>
+  </div>
+
+  <div class="plotbar" id="rowbar">
+    <span class="lbl" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600"
+          title="which rows the results table in every comparison box shows">Table rows</span>
+    <span id="rowchips" style="display:contents"></span>
+    <button class="btn" id="allrows" type="button">all</button>
+    <button class="btn" id="norows" type="button">none</button>
+  </div>
+</header>
+
+<main>
+  <section id="tablepane">
+    <div class="panehead">
+      <div class="row">
+        <h2>All simulations</h2>
+        <span class="seg" id="segtloci" title="score every GWAS trait, or only the loci a GWAS of the selected size would find"></span>
+        <input type="search" id="tablefilter" placeholder="filter…" style="width:74px">
+        <button class="btn" id="hidetable" type="button" title="hide this table — bring it back with the “simulation table” toggle above">hide</button>
+      </div>
+      <div class="subtle" id="tablecaption"></div>
+    </div>
+    <div id="tablewrap"></div>
+  </section>
+
+  <div id="rightcol">
+    <section id="comparepanel"></section>
+    <section id="boxes"></section>
+  </div>
+</main>
+
+<details class="defs">
+  <summary>How these numbers are defined</summary>
+  <ul>
+    <li>One row of the table, and one comparison box, is a <b>simulation</b> = one simulation category (A–N) inside one parameter arm.</li>
+    <li>Every fastEnloc number comes from the same reduction the report PDFs use (<code>enloc_best_rows</code>): one best row per GWAS trait per replicate — NA-correct first, then correct, then highest RCP — pooled over the arm's replicates.</li>
+    <li><b>True positive</b>: the eQTL and GWAS trait ids match and RCP &gt; cutoff. <b>False positive</b>: they do not match and RCP &gt; cutoff. <b>Underpowered colocalization</b>: RCP ≤ cutoff. <b>Underpowered fine-mapping</b>: the trait has no fastEnloc signal at all.</li>
+    <li><b>TPR / FPR</b> are both out of <i>all</i> GWAS traits in the panel — the denominator the report tables use, so TPR is colocalization power and FPR is not 1 − precision.</li>
+    <li><b>FDR</b> = FP / (TP + FP): of the loci actually <i>called</i> at this cutoff, the share whose eQTL partner is the wrong one. It is 1 − precision, so it is the y-axis of the precision–recall curve read upside down, and it is the one row here whose denominator is not all GWAS traits. Undefined (shown as –) when nothing is called.</li>
+    <li>Because the reduction keeps one call per GWAS trait and prefers a correct pairing over a higher-RCP wrong one, a locus that colocalizes correctly is never also counted as a false positive — so FDR here is a <i>lower bound</i> on the rate of spurious above-cutoff pairings.</li>
+    <li><b>Significant loci</b> are those whose causal variant clears χ² = 29.72 (p &lt; 5×10⁻⁸) in expectation in a GWAS of the selected size — deterministic in the simulated β and MAF, no sampling. This is the expected-power definition the report PDFs use, not the observed lead-SNP p-value of the simulated study.</li>
+    <li>The <b>sig. loci</b> rows (and the left table's <i>sig. loci</i> switch) apply that restriction to the whole tally: a true positive counts only if its GWAS trait is significant, a false positive likewise, and the TPR/FPR denominator becomes the number of significant loci rather than all GWAS traits. FDR, being out of the calls made, is affected only through which calls survive the restriction.</li>
+    <li>Under <b>power-weighted</b> causal sampling there is no frequency floor on the causal pool, so the causative cutoff is reported as the sampling scheme; the arm's <code>causal_min_maf</code> token only gates flanking GTEx-only loci.</li>
+    <li>Whiskers on the MAF-by-selection-coefficient plot reach the furthest variant within 1.5 IQR of the hinge; individual outliers are counted in the tooltip rather than drawn.</li>
+  </ul>
+</details>
+
+<div id="tip"></div>
+
+<script src="dashboard_data.js"></script>
+<script>
+'use strict';
+
+/* =======================================================================
+   Data model
+   ======================================================================= */
+const D = window.SIM_DATA;
+
+/* R's toJSON(auto_unbox = TRUE) writes a length-1 vector as a bare scalar, so
+   a one-replicate, one-trait arm would arrive with strings where arrays are
+   expected. The builder marks these fields with I() to prevent it; this is the
+   belt to that pair of braces, and it costs nothing. */
+(function normalizeArrays(d) {
+  const arr = v => (Array.isArray(v) ? v : v === null || v === undefined ? [] : [v]);
+  for (const k of ['maf_bins', 'selco_bins', 'af_breaks', 'af_floors', 'gtex_cats']) d.meta[k] = arr(d.meta[k]);
+  for (const s of d.sims) {
+    s.reps = arr(s.reps);
+    for (const t of Object.values(s.traits || {}))
+      for (const k of ['rep', 'maf_bin', 'rcp', 'correct', 'ncp_per_n']) t[k] = arr(t[k]);
+    for (const af of Object.values(s.af || {}))
+      for (const k of ['all', 'neutral', 'selected']) af[k] = arr(af[k]);
+  }
+})(D);
+
+const SIMS = D.sims;
+const META = D.meta;
+const CHISQ = META.gwas_sig_chisq;
+const PANEL_N = META.panel_n;             // {gtex: 1000, gtex_smaller: 500}
+const MAF_BINS = META.maf_bins;
+const SELCO_BINS = META.selco_bins;
+const OUT_COLORS = D.colors.outcome;      // fp / uc / ufm; tp is the sim's own colour
+
+const CAUSAL_LABEL = { 'power': 'power-weighted', '0': '0%', '0.001': '0.1%', '0.01': '1%' };
+const causalLabel = v => CAUSAL_LABEL[v] || (v == null ? 'n/r' : pct(v));
+const MAF_LABEL = v => (v == null ? 'n/r' : pct(v));
+
+function pct(v) {
+  if (v == null || Number.isNaN(v)) return 'n/r';
+  const p = 100 * v;
+  return (Math.abs(p - Math.round(p)) < 1e-9 ? String(Math.round(p)) : String(+p.toFixed(4))) + '%';
+}
+const fmtInt = n => n.toLocaleString('en-US');
+const fmtPct1 = (k, d) => (d > 0 ? (100 * k / d).toFixed(1) + '%' : 'n/a');
+
+/* Distinct values present in the data, in a stable display order. */
+const ORDER_CAUSAL = ['0.01', '0.001', '0', 'power'];
+const ORDER_FM = ['0.01', '0.001', 'null'];
+const fmKey = s => (s.fm_min_maf == null ? 'null' : String(s.fm_min_maf));
+const present = (keyfn, order) => {
+  const have = new Set(SIMS.map(keyfn));
+  return order.filter(k => have.has(k)).concat([...have].filter(k => !order.includes(k)).sort());
+};
+const CAUSAL_VALUES = present(s => s.causal_cut, ORDER_CAUSAL);
+const FM_VALUES = present(fmKey, ORDER_FM);
+const CATEGORIES = [...new Set(SIMS.map(s => s.category))].sort();
+
+/* -----------------------------------------------------------------------
+   Outcome scoring. Mirrors enloc_outcomes(): the three-valued `correct`
+   (1 / 0 / null) crossed with the RCP cutoff.
+   -------------------------------------------------------------------- */
+function sigFlags(t, gwasN) {
+  return t.ncp_per_n.map(v => v != null && v * gwasN >= CHISQ);
+}
+function traitIndices(sim, panel, sigOnly, gwasN) {
+  const t = sim.traits[panel];
+  if (!t) return null;
+  if (!sigOnly) return { t, idx: t.rcp.map((_, i) => i) };
+  const f = sigFlags(t, gwasN);
+  return { t, idx: f.map((v, i) => (v ? i : -1)).filter(i => i >= 0) };
+}
+function outcomeOf(correct, rcp, cut) {
+  if (correct === null || correct === undefined) return 'ufm';
+  if (rcp <= cut) return 'uc';
+  return correct ? 'tp' : 'fp';
+}
+function counts(sim, panel, cut, sigOnly, gwasN) {
+  const sel = traitIndices(sim, panel, sigOnly, gwasN);
+  if (!sel) return null;
+  const c = { n: sel.idx.length, tp: 0, fp: 0, uc: 0, ufm: 0 };
+  for (const i of sel.idx) c[outcomeOf(sel.t.correct[i], sel.t.rcp[i], cut)]++;
+  return c;
+}
+function countsByMafBin(sim, panel, cut, sigOnly, gwasN) {
+  const sel = traitIndices(sim, panel, sigOnly, gwasN);
+  if (!sel) return null;
+  const rows = MAF_BINS.map(() => ({ tp: 0, fp: 0, uc: 0, ufm: 0, n: 0 }));
+  for (const i of sel.idx) {
+    const b = sel.t.maf_bin[i] - 1;
+    if (b < 0 || b >= rows.length) continue;
+    rows[b][outcomeOf(sel.t.correct[i], sel.t.rcp[i], cut)]++;
+    rows[b].n++;
+  }
+  return rows;
+}
+/* Precision–recall sweep: identical definition to prc_curve(). */
+function prcCurve(sim, panel, sigOnly, gwasN) {
+  const sel = traitIndices(sim, panel, sigOnly, gwasN);
+  if (!sel || !sel.idx.length) return null;
+  const n = sel.idx.length;
+  const pts = [];
+  for (let k = 0; k <= 100; k++) {
+    const cc = k / 100;
+    let tp = 0, fp = 0;
+    for (const i of sel.idx) {
+      const c = sel.t.correct[i];
+      if (c === null || c === undefined) continue;
+      if (sel.t.rcp[i] > cc) { if (c) tp++; else fp++; }
+    }
+    pts.push({ cutoff: cc, tp, fp, recall: tp / n, precision: tp + fp > 0 ? tp / (tp + fp) : null });
+  }
+  return { n, pts };
+}
+
+/* =======================================================================
+   State
+   ======================================================================= */
+/* Rows of the per-box results table. `what` picks the quantity out of one
+   outcome_counts() tally; `cut`/`sig` say which tally.
+     tp    power       true positives / all GWAS traits
+     fp    false pos.  false positives / all GWAS traits
+     fdr   FDR         false positives / calls made (TP + FP) = 1 - precision
+   The last two rows are denominators rather than metrics. */
+/* `sig: true` restricts the whole tally — numerator AND denominator — to the
+   loci a GWAS of the selected size would find. A true positive then only
+   counts if the GWAS trait it belongs to is significant, and so does a false
+   positive; the rate's denominator is the significant-locus count, not the
+   full trait count. */
+/* Order: every RCP > 0.5 metric, then every RCP > 0.9 metric in the same
+   sequence, then the two denominators. This array is the single source of
+   order for the row chips, the results tables and the comparison chart's
+   groups, so they can never disagree. */
+const RESULT_ROWS = [
+  { id: 'tp50',     label: 'Power, RCP > 0.5',                 cut: 0.5, sig: false, what: 'tp' },
+  { id: 'fp50',     label: 'False pos., RCP > 0.5',            cut: 0.5, sig: false, what: 'fp' },
+  { id: 'fdr50',    label: 'FDR, RCP > 0.5',                   cut: 0.5, sig: false, what: 'fdr' },
+  { id: 'tp50sig',  label: 'Power, sig. loci, RCP > 0.5',      cut: 0.5, sig: true,  what: 'tp' },
+  { id: 'fp50sig',  label: 'False pos., sig. loci, RCP > 0.5', cut: 0.5, sig: true,  what: 'fp' },
+  { id: 'fdr50sig', label: 'FDR, sig. loci, RCP > 0.5',        cut: 0.5, sig: true,  what: 'fdr' },
+  { id: 'tp90',     label: 'Power, RCP > 0.9',                 cut: 0.9, sig: false, what: 'tp' },
+  { id: 'fp90',     label: 'False pos., RCP > 0.9',            cut: 0.9, sig: false, what: 'fp' },
+  { id: 'fdr90',    label: 'FDR, RCP > 0.9',                   cut: 0.9, sig: false, what: 'fdr' },
+  { id: 'tp90sig',  label: 'Power, sig. loci, RCP > 0.9',      cut: 0.9, sig: true,  what: 'tp' },
+  { id: 'fp90sig',  label: 'False pos., sig. loci, RCP > 0.9', cut: 0.9, sig: true,  what: 'fp' },
+  { id: 'fdr90sig', label: 'FDR, sig. loci, RCP > 0.9',        cut: 0.9, sig: true,  what: 'fdr' },
+  { id: 'ntraits',  label: 'GWAS traits scored',               cut: 0.5, sig: false, what: 'n' },
+  { id: 'nsig',     label: '… significant at GWAS n',          cut: 0.5, sig: true,  what: 'n' },
+];
+/* Short chip labels: the full label is too long for a chip row. */
+const ROW_CHIP_LABEL = {
+  tp50: 'Power .5', fp50: 'FP .5', fdr50: 'FDR .5',
+  tp90: 'Power .9', fp90: 'FP .9', fdr90: 'FDR .9',
+  tp50sig: 'Power sig .5', fp50sig: 'FP sig .5', fdr50sig: 'FDR sig .5',
+  tp90sig: 'Power sig .9', fp90sig: 'FP sig .9', fdr90sig: 'FDR sig .9',
+  ntraits: 'n scored', nsig: 'n significant',
+};
+/* Rows added after the row selector shipped. A stored selection predating them
+   gets them merged in, instead of silently hiding a metric the user never had
+   the chance to uncheck. */
+const ROWS_VERSION = 2;
+const ROWS_ADDED = { 2: ['fp50sig', 'fdr50sig', 'fp90sig', 'fdr90sig'] };
+
+const PLOT_TYPES = [
+  { id: 'params',       label: 'Parameters' },
+  { id: 'results',      label: 'Results table' },
+  { id: 'prc',          label: 'Precision–recall' },
+  { id: 'outcomes_all', label: 'Outcomes × MAF (all loci)' },
+  { id: 'outcomes_sig', label: 'Outcomes × MAF (significant loci)' },
+  { id: 'af_box',       label: 'MAF by selection coefficient' },
+  { id: 'af_all',       label: 'AF: all variants' },
+  { id: 'af_neutral',   label: 'AF: neutral variants' },
+  { id: 'af_selected',  label: 'AF: non-neutral variants' },
+];
+
+const DEFAULT_STATE = {
+  n: 2,
+  panel: 'gtex',
+  rcp: 0.5,
+  gwasN: META.gwas_n_default,
+  afFloor: '0',
+  afY: 'pct',
+  sharedY: true,
+  plots: ['results', 'outcomes_all', 'prc'],
+  rows: ['tp50', 'fp50', 'fdr50', 'tp50sig', 'fp50sig', 'fdr50sig',
+         'tp90', 'fp90', 'fdr90', 'tp90sig', 'fp90sig', 'fdr90sig',
+         'ntraits', 'nsig'],
+  rowsVersion: ROWS_VERSION,
+  tableLoci: 'all',
+  showTable: true,
+  showCompare: true,
+  boxes: [],
+  active: 0,
+  sort: { col: 'id', dir: 1 },
+  filter: '',
+};
+const LS_KEY = 'sim-dashboard-state-v1';
+
+function loadState() {
+  const s = JSON.parse(JSON.stringify(DEFAULT_STATE));
+  let saved = {};
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) saved = JSON.parse(raw);
+  } catch (e) { /* a corrupt or blocked store just means defaults */ }
+  Object.assign(s, saved);
+  s.plots = s.plots.filter(p => PLOT_TYPES.some(t => t.id === p));
+  /* A state saved before the row selector existed carries no `rows` key; that
+     is not the same as a user who unchecked every row, so only the missing
+     key falls back to the defaults. */
+  s.rows = Array.isArray(saved.rows)
+    ? saved.rows.filter(r => RESULT_ROWS.some(t => t.id === r))
+    : DEFAULT_STATE.rows.slice();
+  if (Array.isArray(saved.rows)) {
+    let add = [];
+    for (let v = (saved.rowsVersion || 1) + 1; v <= ROWS_VERSION; v++) add = add.concat(ROWS_ADDED[v] || []);
+    const keep = new Set(s.rows.concat(add));
+    s.rows = RESULT_ROWS.filter(r => keep.has(r.id)).map(r => r.id);   // canonical order
+  }
+  s.rowsVersion = ROWS_VERSION;
+  if (!['all', 'sig'].includes(s.tableLoci)) s.tableLoci = 'all';
+  if (!(s.panel in PANEL_N)) s.panel = 'gtex';
+  return s;
+}
+function saveState() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+}
+const state = loadState();
+
+/* Two sensible starting boxes: the human and cattle baselines of the arm with
+   the most simulations, so the page is useful before anything is touched. */
+function defaultBoxes() {
+  const byArm = {};
+  SIMS.forEach(s => { (byArm[s.arm] = byArm[s.arm] || []).push(s); });
+  const arm = Object.keys(byArm).sort((a, b) => byArm[b].length - byArm[a].length)[0];
+  const pick = cat => byArm[arm].find(s => s.category === cat) || byArm[arm][0];
+  return [boxFromSim(pick('A')), boxFromSim(pick('E'))];
+}
+function boxFromSim(sim) {
+  return { cat: sim.category, causal: sim.causal_cut, fm: fmKey(sim), arm: sim.arm };
+}
+if (!state.boxes.length) state.boxes = defaultBoxes();
+while (state.boxes.length < state.n) state.boxes.push(JSON.parse(JSON.stringify(state.boxes[state.boxes.length - 1] || boxFromSim(SIMS[0]))));
+state.n = Math.max(1, Math.min(8, state.n));
+
+/* Query-string overrides, so a particular view can be bookmarked or handed to
+   someone else:  ?sims=<id>,<id>&plots=all&panel=gtex_smaller&rcp=0.9
+   They seed the state; anything changed afterwards is stored as usual. */
+(function applyQuery() {
+  const q = new URLSearchParams(location.search);
+  if (q.has('sims')) {
+    const chosen = q.get('sims').split(',').map(id => SIMS.find(s => s.id === id || s.id.endsWith('::' + id))).filter(Boolean);
+    if (chosen.length) { state.boxes = chosen.map(boxFromSim); state.n = chosen.length; }
+  }
+  if (q.has('n')) state.n = Math.max(1, Math.min(8, parseInt(q.get('n'), 10) || state.n));
+  while (state.boxes.length < state.n) state.boxes.push(JSON.parse(JSON.stringify(state.boxes[state.boxes.length - 1])));
+  if (q.has('plots')) {
+    const v = q.get('plots');
+    state.plots = v === 'all' ? PLOT_TYPES.map(p => p.id)
+                : v === 'none' ? []
+                : PLOT_TYPES.filter(p => v.split(',').includes(p.id)).map(p => p.id);
+  }
+  if (q.has('rows')) {
+    const v = q.get('rows');
+    state.rows = v === 'all' ? RESULT_ROWS.map(r => r.id)
+               : v === 'none' ? []
+               : RESULT_ROWS.filter(r => v.split(',').includes(r.id)).map(r => r.id);
+  }
+  if (q.has('tloci') && ['all', 'sig'].includes(q.get('tloci'))) state.tableLoci = q.get('tloci');
+  if (q.has('table')) state.showTable = !['0', 'false', 'no', 'hide'].includes(q.get('table'));
+  if (q.has('compare')) state.showCompare = !['0', 'false', 'no', 'hide'].includes(q.get('compare'));
+  if (q.has('panel') && q.get('panel') in PANEL_N) state.panel = q.get('panel');
+  if (q.has('rcp')) state.rcp = Math.max(0, Math.min(0.99, parseFloat(q.get('rcp')) || state.rcp));
+  if (q.has('gwasn')) state.gwasN = parseInt(q.get('gwasn'), 10) || state.gwasN;
+  if (q.has('floor')) state.afFloor = q.get('floor');
+  if (q.has('afy')) state.afY = q.get('afy');
+  if (q.has('sharedy')) state.sharedY = !['0', 'false', 'no'].includes(q.get('sharedy'));
+})();
+
+/* Resolve a box's selection to a simulation. The category and the two cutoffs
+   narrow the list; the arm select picks among whatever is left, and falls back
+   to the first match when the current arm no longer qualifies. */
+function boxMatches(b) {
+  return SIMS.filter(s =>
+    s.category === b.cat &&
+    (b.causal === 'any' || s.causal_cut === b.causal) &&
+    (b.fm === 'any' || fmKey(s) === b.fm));
+}
+function boxSim(b) {
+  const m = boxMatches(b);
+  return m.find(s => s.arm === b.arm) || m[0] || null;
+}
+
+/* =======================================================================
+   Small DOM + SVG helpers
+   ======================================================================= */
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tipAttr = s => `data-tip="${esc(s)}"`;
+
+function segHTML(name, opts, value, cls) {
+  return opts.map(o => `<label${o.title ? ` title="${esc(o.title)}"` : ''}>
+    <input type="radio" name="${name}" value="${esc(o.value)}"${String(o.value) === String(value) ? ' checked' : ''}${cls ? ` class="${cls}"` : ''}>
+    <span>${esc(o.label)}</span></label>`).join('');
+}
+
+/* Axis ticks at a 1/2/2.5/5×10ⁿ interval, roughly `target` of them.
+   The last tick is at or ABOVE max, so a bar can never overshoot the axis. */
+function niceTicks(max, target) {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || 10 * mag;
+  const out = [];
+  for (let v = 0; ; v += step) {
+    out.push(+v.toFixed(10));
+    if (v >= max - 1e-12 || out.length > 40) break;
+  }
+  return out;
+}
+
+/* Every chart is one <svg> with a fixed viewBox scaled to the box width, so
+   the same code serves a one-up and a four-up layout. */
+function chartOpen(w, h) {
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img">`;
+}
+function axisY(x0, x1, yScale, ticks, fmt) {
+  return ticks.map(t => {
+    const y = yScale(t);
+    return `<line x1="${x0}" x2="${x1}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/>` +
+           `<text x="${x0 - 6}" y="${y + 3.5}" text-anchor="end" font-size="9.5" fill="var(--ink-3)">${fmt(t)}</text>`;
+  }).join('');
+}
+function legendRow(x, y, items, size) {
+  const s = size || 9.5;
+  let cx = x, out = '';
+  for (const it of items) {
+    if (it.dash !== undefined) {
+      out += `<line x1="${cx}" x2="${cx + 16}" y1="${y}" y2="${y}" stroke="${it.color}" stroke-width="2"${it.dash ? ` stroke-dasharray="${it.dash}"` : ''}/>`;
+      cx += 20;
+    } else if (it.shape) {
+      out += marker(it.shape, cx + 5, y, it.color);
+      cx += 14;
+    } else {
+      out += `<rect x="${cx}" y="${y - 5}" width="10" height="10" rx="2" fill="${it.color}"/>`;
+      cx += 14;
+    }
+    out += `<text x="${cx}" y="${y + 3.4}" font-size="${s}" fill="var(--ink-2)">${esc(it.label)}</text>`;
+    cx += it.label.length * (s * 0.53) + 14;
+  }
+  return out;
+}
+function marker(shape, x, y, color) {
+  if (shape === 'circle') return `<circle cx="${x}" cy="${y}" r="3.6" fill="${color}" stroke="var(--surface)" stroke-width="1.5"/>`;
+  const r = 4.2;
+  return `<polygon points="${x},${y - r} ${x + r},${y + r * 0.8} ${x - r},${y + r * 0.8}" fill="${color}" stroke="var(--surface)" stroke-width="1.5"/>`;
+}
+
+/* =======================================================================
+   Charts
+   ======================================================================= */
+
+/* Stacked outcome counts per GWAS causal-variant MAF bin.
+   Stack order bottom→top: TP, FP, underpowered coloc, underpowered fine-mapping
+   (position_stack(reverse = TRUE) in the report). */
+function chartOutcomes(sim, panel, cut, sigOnly, gwasN, yMax) {
+  const rows = countsByMafBin(sim, panel, cut, sigOnly, gwasN);
+  const c = counts(sim, panel, cut, sigOnly, gwasN);
+  if (!rows) return `<div class="plotnote">no fastEnloc output for this panel.</div>`;
+  const W = 520, H = 330, mL = 44, mR = 10, mT = 14, mB = 78;
+  const pw = W - mL - mR, ph = H - mT - mB;
+  const dataMax = Math.max(1, ...rows.map(r => r.n));
+  const top = Math.max(1, yMax || dataMax);
+  const ticks = niceTicks(top, 5);
+  const hi = ticks[ticks.length - 1];
+  const yS = v => mT + ph - (v / hi) * ph;
+  const bw = Math.min(38, (pw / rows.length) * 0.72);
+
+  const series = [
+    { k: 'tp', label: 'True positive', color: sim.color },
+    { k: 'fp', label: 'False positive', color: OUT_COLORS.fp },
+    { k: 'uc', label: 'Underpowered coloc.', color: OUT_COLORS.uc },
+    { k: 'ufm', label: 'Underpowered fine-map.', color: OUT_COLORS.ufm },
+  ];
+
+  let s = chartOpen(W, H);
+  s += axisY(mL, W - mR, yS, ticks, v => fmtInt(v));
+  rows.forEach((r, i) => {
+    const xc = mL + (pw / rows.length) * (i + 0.5);
+    let acc = 0;
+    for (const ser of series) {
+      const v = r[ser.k];
+      if (!v) continue;
+      const y0 = yS(acc), y1 = yS(acc + v);
+      const gap = (y0 - y1) > 5 ? 2 : 0;    // 2px surface gap, never a border
+      s += `<rect x="${(xc - bw / 2).toFixed(1)}" y="${(y1 + gap / 2).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.7, y0 - y1 - gap).toFixed(1)}" fill="${ser.color}" ${tipAttr(`${MAF_BINS[i]}\n${ser.label}: ${v} of ${r.n} traits`)}/>`;
+      acc += v;
+    }
+    s += `<text transform="rotate(-45 ${xc} ${mT + ph + 12})" x="${xc}" y="${mT + ph + 12}" text-anchor="end" font-size="9" fill="var(--ink-3)">${esc(MAF_BINS[i])}</text>`;
+  });
+  s += `<line x1="${mL}" x2="${W - mR}" y1="${mT + ph}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<line x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<text x="${mL + pw / 2}" y="${H - 30}" text-anchor="middle" font-size="10" fill="var(--ink-2)">GWAS causal-variant MAF</text>`;
+  s += `<text transform="rotate(-90 12 ${mT + ph / 2})" x="12" y="${mT + ph / 2}" text-anchor="middle" font-size="10" fill="var(--ink-2)">GWAS traits</text>`;
+  /* The report prints power and FP in the corner on the scored-trait
+     denominator (which the significant-loci panel narrows); FDR is added on the
+     call denominator, as everywhere else. */
+  const fdr = fdrOf(c);
+  s += `<text x="${W - mR}" y="${mT + 9}" text-anchor="end" font-size="9.5" fill="var(--ink-2)">power ${c.tp} (${fmtPct1(c.tp, c.n)})</text>`;
+  s += `<text x="${W - mR}" y="${mT + 21}" text-anchor="end" font-size="9.5" fill="var(--ink-2)">FP ${c.fp} (${fmtPct1(c.fp, c.n)})</text>`;
+  s += `<text x="${W - mR}" y="${mT + 33}" text-anchor="end" font-size="9.5" fill="var(--ink-2)">FDR ${fdr === null ? '–' : (100 * fdr).toFixed(1) + '%'}</text>`;
+  s += legendRow(mL - 30, H - 8, series.map(x => ({ label: x.label, color: x.color })));
+  return s + '</svg>';
+}
+
+/* Precision–recall, all traits (solid) with the significant-loci subset
+   (dashed) overlaid, marked at RCP > 0.5 and > 0.9. */
+function chartPRC(sim, panel, gwasN) {
+  const a = prcCurve(sim, panel, false, gwasN);
+  const b = prcCurve(sim, panel, true, gwasN);
+  if (!a) return `<div class="plotnote">no fastEnloc output for this panel.</div>`;
+  const W = 520, H = 320, mL = 46, mR = 12, mT = 12, mB = 66;
+  const pw = W - mL - mR, ph = H - mT - mB;
+  const xS = v => mL + v * pw, yS = v => mT + ph - v * ph;
+
+  const path = curve => {
+    const pts = curve.pts.filter(p => p.precision !== null);
+    if (!pts.length) return '';
+    return pts.map((p, i) => `${i ? 'L' : 'M'}${xS(p.recall).toFixed(1)},${yS(p.precision).toFixed(1)}`).join('');
+  };
+  const marks = (curve, dashed) => [0.5, 0.9].map((cc, j) => {
+    const p = curve.pts[Math.round(cc * 100)];
+    if (!p || p.precision === null) return '';
+    return marker(j ? 'triangle' : 'circle', xS(p.recall), yS(p.precision), sim.color) +
+      `<circle cx="${xS(p.recall)}" cy="${yS(p.precision)}" r="7" fill="transparent" ${tipAttr(`${dashed ? 'Significant loci' : 'All GWAS traits'} · RCP > ${cc}\nrecall ${(100 * p.recall).toFixed(1)}%  (TP ${p.tp}/${curve.n})\nprecision ${(100 * p.precision).toFixed(1)}%  (FP ${p.fp})`)}/>`;
+  }).join('');
+
+  let s = chartOpen(W, H);
+  const t = [0, 0.25, 0.5, 0.75, 1];
+  s += axisY(mL, W - mR, yS, t, v => v.toFixed(2));
+  s += t.map(v => `<line x1="${xS(v)}" x2="${xS(v)}" y1="${mT}" y2="${mT + ph}" stroke="var(--line)"/>` +
+    `<text x="${xS(v)}" y="${mT + ph + 13}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${v.toFixed(2)}</text>`).join('');
+  s += `<path d="${path(a)}" fill="none" stroke="${sim.color}" stroke-width="2" stroke-linejoin="round"/>`;
+  if (b) s += `<path d="${path(b)}" fill="none" stroke="${sim.color}" stroke-width="2" stroke-dasharray="5 3" stroke-linejoin="round"/>`;
+  s += marks(a, false);
+  if (b) s += marks(b, true);
+  s += `<line x1="${mL}" x2="${W - mR}" y1="${mT + ph}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<line x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<text x="${mL + pw / 2}" y="${mT + ph + 30}" text-anchor="middle" font-size="10" fill="var(--ink-2)">Recall (fraction of all GWAS traits)</text>`;
+  s += `<text transform="rotate(-90 13 ${mT + ph / 2})" x="13" y="${mT + ph / 2}" text-anchor="middle" font-size="10" fill="var(--ink-2)">Precision</text>`;
+  s += legendRow(mL - 34, H - 20, [
+    { label: 'All GWAS traits', color: sim.color, dash: 0 },
+    { label: `Significant loci (n = ${fmtInt(gwasN)})`, color: sim.color, dash: '5 3' }]);
+  s += legendRow(mL - 34, H - 6, [
+    { label: 'RCP > 0.5', color: sim.color, shape: 'circle' },
+    { label: 'RCP > 0.9', color: sim.color, shape: 'triangle' }]);
+  return s + '</svg>';
+}
+
+/* Allele-frequency histogram: 50 bins of width 0.01 over MAF.
+   The y-axis is a share of the panel by default: a human GWAS panel holds ~27x
+   more variants than a cattle one, so on a shared count axis the cattle
+   histogram is a flat line. Counts stay one control away, and in the tooltip. */
+function chartAFHist(sim, which, floor, yMax) {
+  const af = sim.af[floor];
+  if (!af) return `<div class="plotnote">no variant table for this simulation.</div>`;
+  const counts_ = af[which], bw = META.af_bin_width;
+  const nbin = counts_.length, total = counts_.reduce((a, b) => a + b, 0);
+  const asPct = state.afY === 'pct';
+  const h = asPct ? counts_.map(v => (total ? 100 * v / total : 0)) : counts_;
+  const W = 520, H = 190, mL = 50, mR = 10, mT = 10, mB = 40;
+  const pw = W - mL - mR, ph = H - mT - mB;
+  const top = Math.max(asPct ? 0.5 : 1, yMax || Math.max(...h));
+  const ticks = niceTicks(top, 4);
+  const hi = ticks[ticks.length - 1];
+  const yS = v => mT + ph - (v / hi) * ph;
+  const bwpx = pw / nbin;
+
+  let s = chartOpen(W, H);
+  s += axisY(mL, W - mR, yS, ticks, v => (asPct ? v + '%' : (v >= 1000 ? (v / 1000) + 'k' : String(v))));
+  h.forEach((v, i) => {
+    if (!v) return;
+    const x = mL + i * bwpx, y = yS(v);
+    s += `<rect x="${(x + 0.5).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0.8, bwpx - 1).toFixed(1)}" height="${(mT + ph - y).toFixed(1)}" fill="${sim.color}" ${tipAttr(`MAF ${(i * bw).toFixed(2)}–${((i + 1) * bw).toFixed(2)}\n${fmtInt(counts_[i])} variants (${fmtPct1(counts_[i], total)})`)}/>`;
+  });
+  for (let v = 0; v <= 0.5001; v += 0.1) {
+    const x = mL + (v / 0.5) * pw;
+    s += `<text x="${x}" y="${mT + ph + 13}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${v.toFixed(1)}</text>`;
+  }
+  s += `<line x1="${mL}" x2="${W - mR}" y1="${mT + ph}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<line x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<text x="${mL + pw / 2}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--ink-2)">MAF</text>`;
+  s += `<text transform="rotate(-90 12 ${mT + ph / 2})" x="12" y="${mT + ph / 2}" text-anchor="middle" font-size="10" fill="var(--ink-2)">${asPct ? 'share of variants' : 'variants'}</text>`;
+  s += `<text x="${W - mR}" y="${mT + 9}" text-anchor="end" font-size="9.5" fill="var(--ink-3)">${fmtInt(total)} variants</text>`;
+  return s + '</svg>';
+}
+
+/* MAF by selection-coefficient bin, as boxes with 1.5-IQR whiskers.
+   The axis follows the data rather than sitting at 0–0.5: a human panel's
+   hinges live below MAF 0.01 and would otherwise be one flat line on the
+   baseline. With the shared y-axis on, the ceiling is shared across boxes. */
+function chartSelcoBox(sim, floor, yMax) {
+  const af = sim.af[floor];
+  if (!af) return `<div class="plotnote">no variant table for this simulation.</div>`;
+  const stats = SELCO_BINS.map(b => af.box[b] || null);
+  const W = 520, H = 290, mL = 50, mR = 10, mT = 12, mB = 96;
+  const pw = W - mL - mR, ph = H - mT - mB;
+  const dataMax = Math.max(1e-4, ...stats.filter(Boolean).map(st => st.ymax));
+  const ticks = niceTicks(yMax || dataMax, 5);
+  const hi = ticks[ticks.length - 1];
+  const yS = v => mT + ph - (v / hi) * ph;
+  const slot = pw / stats.length, bw = Math.min(30, slot * 0.6);
+  const tfmt = hi >= 0.1 ? (v => v.toFixed(2)) : (v => v.toExponential(0).replace('e-', 'e−'));
+
+  let s = chartOpen(W, H);
+  s += axisY(mL, W - mR, yS, ticks, tfmt);
+  stats.forEach((st, i) => {
+    const xc = mL + slot * (i + 0.5);
+    if (!st) {
+      s += `<text x="${xc}" y="${mT + ph - 4}" text-anchor="middle" font-size="9" fill="var(--ink-3)">–</text>`;
+    } else {
+      const yq1 = yS(st.lower), yq3 = yS(st.upper), ymed = yS(st.middle);
+      s += `<line x1="${xc}" x2="${xc}" y1="${yS(st.ymin)}" y2="${yS(st.ymax)}" stroke="${sim.color}" stroke-width="1"/>`;
+      s += `<line x1="${xc - bw / 4}" x2="${xc + bw / 4}" y1="${yS(st.ymin)}" y2="${yS(st.ymin)}" stroke="${sim.color}" stroke-width="1"/>`;
+      s += `<line x1="${xc - bw / 4}" x2="${xc + bw / 4}" y1="${yS(st.ymax)}" y2="${yS(st.ymax)}" stroke="${sim.color}" stroke-width="1"/>`;
+      s += `<rect x="${xc - bw / 2}" y="${yq3}" width="${bw}" height="${Math.max(1, yq1 - yq3)}" fill="var(--surface)" stroke="${sim.color}" stroke-width="1.2" ` +
+           tipAttr(`${SELCO_BINS[i]}\nn = ${fmtInt(st.n)} variants\nmedian ${st.middle.toFixed(4)}\nIQR ${st.lower.toFixed(4)} – ${st.upper.toFixed(4)}\nwhiskers ${st.ymin.toFixed(4)} – ${st.ymax.toFixed(4)}\n${fmtInt(st.n_out_hi + st.n_out_lo)} beyond whiskers (max ${st.max.toFixed(3)})`) + `/>`;
+      s += `<line x1="${xc - bw / 2}" x2="${xc + bw / 2}" y1="${ymed}" y2="${ymed}" stroke="${sim.color}" stroke-width="2"/>`;
+    }
+    s += `<text transform="rotate(-45 ${xc} ${mT + ph + 12})" x="${xc}" y="${mT + ph + 12}" text-anchor="end" font-size="8.5" fill="var(--ink-3)">${esc(SELCO_BINS[i])}</text>`;
+  });
+  s += `<line x1="${mL}" x2="${W - mR}" y1="${mT + ph}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<line x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<text x="${mL + pw / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--ink-2)">selection coefficient</text>`;
+  s += `<text transform="rotate(-90 12 ${mT + ph / 2})" x="12" y="${mT + ph / 2}" text-anchor="middle" font-size="10" fill="var(--ink-2)">MAF</text>`;
+  return s + '</svg>';
+}
+
+/* =======================================================================
+   Cross-box outcome comparison
+   ======================================================================= */
+
+/* Two boxes can hold the same category from different arms, and a category
+   owns exactly one colour, so duplicates are stepped lighter/darker in turn
+   (+1, -1, +2, …) rather than being redrawn in someone else's hue: the family
+   still reads as "category A", and the bars stay distinguishable. */
+const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+/* Weighted RGB distance — the cheap approximation of perceived difference.
+   Two colours below ~90 apart are hard to tell apart in a 20px-wide bar. */
+function colorDist(a, b) {
+  const [r1, g1, b1] = rgb(a), [r2, g2, b2] = rgb(b);
+  return Math.sqrt(2 * (r1 - r2) ** 2 + 4 * (g1 - g2) ** 2 + 3 * (b1 - b2) ** 2);
+}
+function shiftColor(hex, k) {
+  const amt = Math.min(0.78, 0.3 * Math.abs(k)), up = k > 0;
+  const ch = c => Math.round(up ? c + (255 - c) * amt : c * (1 - amt));
+  return '#' + rgb(hex).map(c => ch(c).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+/* Two boxes can hold the same category — or two categories from the same
+   species family — so a colour is stepped away from the ones already taken
+   until it is far enough from all of them. Stepping stays within the
+   category's own hue (lighter for dark bases, darker for light ones), so the
+   family still reads correctly; the legend's box number is the tiebreaker,
+   and within every group the bars sit in box order. */
+function boxColors(sims) {
+  const used = [];
+  return sims.map(s => {
+    if (!s) return null;
+    const [r, g, b] = rgb(s.color);
+    const dir = (0.299 * r + 0.587 * g + 0.114 * b) < 140 ? 1 : -1;
+    let c = s.color;
+    for (let k = 1; k <= 5 && used.some(u => colorDist(u, c) < 90); k++) c = shiftColor(s.color, dir * k);
+    used.push(c);
+    return c;
+  });
+}
+
+/* One metric's value for one simulation, as a fraction, with the numerator and
+   denominator that produced it (the denominators differ by row: TP and FP are
+   out of the traits scored, FDR out of the calls made). */
+function metricValue(sim, row, panel, gwasN) {
+  const c = counts(sim, panel, row.cut, row.sig, gwasN);
+  if (!c) return null;
+  if (row.what === 'fdr') {
+    const den = c.tp + c.fp;
+    return den ? { v: c.fp / den, num: c.fp, den, denLabel: 'calls' } : null;
+  }
+  return c.n ? { v: c[row.what] / c.n, num: c[row.what], den: c.n, denLabel: 'traits scored' } : null;
+}
+
+/* Grouped bars: one group per selected percentage row, one bar per compared
+   simulation. Every bar is a percentage, so they share one axis. */
+function chartCompare(entries, rows, panel, gwasN) {
+  const nser = entries.length, ngrp = rows.length;
+  const W = Math.max(700, Math.min(1500, 74 * ngrp * Math.max(1, Math.min(nser, 4)) / 2 + 90 * ngrp));
+  const H = 300, mL = 46, mR = 12, mT = 12, mB = 52;
+  const pw = W - mL - mR, ph = H - mT - mB;
+
+  const vals = rows.map(r => entries.map(e => metricValue(e.sim, r, panel, gwasN)));
+  const dataMax = Math.max(0.05, ...vals.flat().filter(Boolean).map(x => x.v));
+  const ticks = niceTicks(100 * dataMax, 5);
+  const hi = ticks[ticks.length - 1];
+  const yS = v => mT + ph - (100 * v / hi) * ph;
+
+  const slot = pw / ngrp;
+  const cluster = Math.min(slot * 0.82, 26 * nser);
+  const bw = cluster / nser;
+
+  let s = chartOpen(W, H).replace('class="chart"', 'class="chart wide"');
+  s += axisY(mL, W - mR, v => mT + ph - (v / hi) * ph, ticks, v => v + '%');
+  rows.forEach((r, gi) => {
+    const x0 = mL + slot * gi + (slot - cluster) / 2;
+    entries.forEach((e, si) => {
+      const d = vals[gi][si];
+      const x = x0 + si * bw;
+      if (!d) {
+        s += `<text x="${(x + bw / 2).toFixed(1)}" y="${mT + ph - 3}" text-anchor="middle" font-size="8.5" fill="var(--ink-3)" ${tipAttr(`${e.label}\n${r.label}\nundefined — no ${r.what === 'fdr' ? 'calls made' : 'traits scored'}`)}>–</text>`;
+        return;
+      }
+      const y = yS(d.v);
+      /* 2px surface gap between neighbours instead of a stroke. */
+      s += `<rect x="${(x + 1).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1.5, bw - 2).toFixed(1)}" height="${Math.max(0.8, mT + ph - y).toFixed(1)}" fill="${e.color}" ` +
+           tipAttr(`${e.label}\n${r.label}\n${(100 * d.v).toFixed(1)}%  (${d.num} of ${d.den} ${d.denLabel})`) + `/>`;
+    });
+    s += `<text x="${(mL + slot * (gi + 0.5)).toFixed(1)}" y="${mT + ph + 15}" text-anchor="middle" font-size="11" fill="var(--ink-2)">${esc(ROW_CHIP_LABEL[r.id] || r.label)}</text>`;
+  });
+  s += `<line x1="${mL}" x2="${W - mR}" y1="${mT + ph}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<line x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT + ph}" stroke="var(--line-2)"/>`;
+  s += `<text transform="rotate(-90 12 ${mT + ph / 2})" x="12" y="${mT + ph / 2}" text-anchor="middle" font-size="10" fill="var(--ink-2)">percent</text>`;
+  s += `<text x="${mL + pw / 2}" y="${H - 14}" text-anchor="middle" font-size="10.5" fill="var(--ink-3)">Power and false positives are out of the traits scored; FDR is out of the calls made.</text>`;
+  return s + '</svg>';
+}
+
+function renderCompare() {
+  const el = document.getElementById('comparepanel');
+  if (!state.showCompare) { el.innerHTML = ''; return; }
+
+  const entries = [];
+  const sims = [];
+  for (let i = 0; i < state.n; i++) sims.push(boxSim(state.boxes[i]));
+  const colors = boxColors(sims);
+  sims.forEach((sim, i) => {
+    if (!sim || !sim.traits[state.panel]) return;
+    entries.push({ i, sim, color: colors[i],
+                   label: `${i + 1} · ${sim.category} · ${sim.arm}` });
+  });
+
+  /* Only the rows that are a percentage: the two denominator rows have no
+     meaning on a percent axis. */
+  const rows = RESULT_ROWS.filter(r => state.rows.includes(r.id) && r.what !== 'n');
+
+  let body;
+  if (!entries.length) body = `<div class="plotnote">no comparison box has fastEnloc output for this eQTL panel.</div>`;
+  else if (!rows.length) body = `<div class="plotnote">no percentage rows selected — tick some under “Table rows”.</div>`;
+  else body = chartCompare(entries, rows, state.panel, state.gwasN) +
+    `<div class="lgdrow">${entries.map(e =>
+      `<span class="lgd"><i style="background:${e.color}"></i><b>${e.i + 1}</b> ${esc(e.sim.category)} · ${esc(e.sim.arm)}</span>`).join('')}</div>`;
+
+  el.innerHTML = `<div class="cmp">
+      <div class="hd"><div class="plottitle" style="margin:0">Outcome comparison</div>
+        <div class="plotnote" style="margin:0">eQTL panel n = ${PANEL_N[state.panel]}, significant loci at GWAS n = ${fmtInt(state.gwasN)}</div></div>
+      ${body}
+    </div>`;
+}
+
+/* =======================================================================
+   Tables inside a box
+   ======================================================================= */
+function tableParams(sim) {
+  const rows = [
+    ['GWAS multiplier', sim.gwas_mult == null ? 'n/r' : sim.gwas_mult + '×'],
+    ['GTEx multiplier', sim.gtex_mult == null ? 'n/r' : sim.gtex_mult + '×'],
+    ['Causative variant MAF cutoff', causalLabel(sim.causal_cut)],
+  ];
+  if (sim.causal_sampling === 'power') {
+    rows.push(['Causative variant sampling', `by power (GWAS n = ${fmtInt(sim.sampling_gwas_n || 0)})`]);
+    rows.push(['Stage-2 causal_min_maf token', `${MAF_LABEL(sim.causal_min_maf)} — not a floor here`]);
+  }
+  rows.push(['Fine-mapping MAF cutoff', MAF_LABEL(sim.fm_min_maf)]);
+  rows.push(['GLM MAF cutoff', MAF_LABEL(sim.min_maf)]);
+  rows.push(['r² threshold for fine-mapping', sim.fm_r2 == null ? 'n/r' : String(sim.fm_r2)]);
+  rows.push(['Region', sim.region || 'n/r']);
+  rows.push(['Replicates', `${sim.replicates} (${sim.reps.join(', ')})`]);
+  return `<table class="kv">${rows.map(r => `<tr><td>${esc(r[0])}</td><td class="v">${esc(r[1])}</td></tr>`).join('')}</table>`;
+}
+
+/* False discovery rate: of the calls made at this cutoff, the share that are
+   wrong. Undefined — not zero — when nothing was called. */
+const fdrOf = c => (c && c.tp + c.fp > 0 ? c.fp / (c.tp + c.fp) : null);
+
+function tableResults(sim, gwasN) {
+  const panels = META.gtex_cats.filter(p => sim.traits[p]);
+  if (!panels.length) return `<div class="plotnote">no fastEnloc output.</div>`;
+  const rows = RESULT_ROWS.filter(r => state.rows.includes(r.id));
+  if (!rows.length) return `<div class="plotnote">no table rows selected.</div>`;
+
+  const cache = {};
+  const get = (p, cut, sig) => (cache[p + cut + sig] = cache[p + cut + sig] || counts(sim, p, cut, sig, gwasN));
+  const cell = (r, p) => {
+    const c = get(p, r.cut, r.sig);
+    if (r.what === 'n') return String(c.n);
+    if (r.what === 'fdr') {
+      const f = fdrOf(c);
+      /* Denominator in the parens is the call count, not the trait count: FDR
+         is the only row here that is not out of all GWAS traits. */
+      return f === null ? '–' : `${(100 * f).toFixed(1)}% <span class="subtle">(${c.fp}/${c.tp + c.fp})</span>`;
+    }
+    return `${c[r.what]} <span class="subtle">(${fmtPct1(c[r.what], c.n)})</span>`;
+  };
+
+  const label = r => (r.id === 'nsig' ? `… significant at n = ${fmtInt(gwasN)}` : r.label);
+  let h = `<table class="res"><thead><tr><th>Metric</th>${panels.map(p => `<th>GTEx n = ${PANEL_N[p]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const r of rows) {
+    h += `<tr><td>${esc(label(r))}</td>` + panels.map(p => `<td>${cell(r, p)}</td>`).join('') + '</tr>';
+  }
+  return h + '</tbody></table>';
+}
+
+/* =======================================================================
+   Rendering: global controls
+   ======================================================================= */
+function renderControls() {
+  document.getElementById('metaline').textContent =
+    `${SIMS.length} simulations · ${SIMS.reduce((a, s) => a + s.replicates, 0)} replicates · data built ${META.generated}`;
+
+  document.getElementById('nboxes').value = state.n;
+  document.getElementById('segpanel').innerHTML = segHTML('g-panel',
+    META.gtex_cats.map(p => ({ value: p, label: `n = ${PANEL_N[p]}` })), state.panel);
+  const rcpOpts = [{ value: '0.5', label: '0.5' }, { value: '0.9', label: '0.9' }];
+  document.getElementById('segrcp').innerHTML = segHTML('g-rcp', rcpOpts,
+    (state.rcp === 0.5 || state.rcp === 0.9) ? String(state.rcp) : 'x');
+  document.getElementById('rcpslider').value = state.rcp;
+  document.getElementById('rcpval').textContent = state.rcp.toFixed(2);
+  const ns = [8000, 20000, 50000, 100000, 250000, 500000, 1000000];
+  if (!ns.includes(state.gwasN)) ns.push(state.gwasN);
+  document.getElementById('gwasn').innerHTML = ns.sort((a, b) => a - b)
+    .map(n => `<option value="${n}"${n === state.gwasN ? ' selected' : ''}>${fmtInt(n)}</option>`).join('');
+  document.getElementById('segfloor').innerHTML = segHTML('g-floor',
+    META.af_floors.map(f => ({ value: String(f), label: f === 0 ? 'none' : `MAF > ${pct(f)}` })), state.afFloor);
+  document.getElementById('segafy').innerHTML = segHTML('g-afy',
+    [{ value: 'pct', label: '% of variants', title: 'comparable across panels of different size' },
+     { value: 'count', label: 'counts' }], state.afY);
+  document.getElementById('sharedy').checked = state.sharedY;
+  document.getElementById('showtable').checked = state.showTable;
+  document.getElementById('showcompare').checked = state.showCompare;
+
+  document.getElementById('plotchips').innerHTML = PLOT_TYPES.map(p =>
+    `<label class="chip"><input type="checkbox" class="plotchk" value="${p.id}"${state.plots.includes(p.id) ? ' checked' : ''}>${esc(p.label)}</label>`).join('');
+  document.getElementById('segtloci').innerHTML = segHTML('t-loci',
+    [{ value: 'all', label: 'all loci' }, { value: 'sig', label: 'sig. loci' }], state.tableLoci);
+  document.getElementById('rowchips').innerHTML = RESULT_ROWS.map(r =>
+    `<label class="chip" title="${esc(r.label)}"><input type="checkbox" class="rowchk" value="${r.id}"${state.rows.includes(r.id) ? ' checked' : ''}>${esc(ROW_CHIP_LABEL[r.id] || r.label)}</label>`).join('');
+}
+
+/* The sticky table pane hangs off the header, whose height depends on how the
+   control rows wrap. Measure it rather than guessing. */
+function measureHeader() {
+  const h = document.querySelector('header').offsetHeight;
+  document.documentElement.style.setProperty('--headh', h + 'px');
+}
+window.addEventListener('resize', measureHeader);
+
+/* =======================================================================
+   Rendering: the always-on table of every simulation
+   ======================================================================= */
+const TABLE_COLS = [
+  { id: 'id', label: 'Simulation', left: true, w: '' },
+  { id: 'causal', label: 'Causal', w: '52px', title: 'Causative-variant MAF cutoff (or the sampling scheme, when the draw is power-weighted)' },
+  { id: 'fmglm', label: 'FM/GLM', w: '54px', title: 'Fine-mapping MAF cutoff, and the plink2 GLM floor after the slash when the two differ' },
+  { id: 'reps', label: 'Reps', w: '34px' },
+  { id: 'n', label: 'n', w: '36px', title: 'GWAS traits scored — the TPR/FPR denominator' },
+  { id: 'tpr50', label: 'TPR .5', w: '42px', title: 'True positives / all GWAS traits, RCP > 0.5' },
+  { id: 'fpr50', label: 'FPR .5', w: '42px', title: 'False positives / all GWAS traits, RCP > 0.5' },
+  { id: 'fdr50', label: 'FDR .5', w: '42px', title: 'False positives / calls made (TP + FP), RCP > 0.5' },
+  { id: 'tpr90', label: 'TPR .9', w: '42px', title: 'True positives / all GWAS traits, RCP > 0.9' },
+  { id: 'fpr90', label: 'FPR .9', w: '42px', title: 'False positives / all GWAS traits, RCP > 0.9' },
+  { id: 'fdr90', label: 'FDR .9', w: '42px', title: 'False positives / calls made (TP + FP), RCP > 0.9' },
+];
+
+/* Arm names share long prefixes — cmaf0_fm001_g5t20_psamp100000_2Mb and
+   cmaf0_fm001_g5t20_psamp50000sat05_2Mb differ only in their tail — so the
+   table ellipsizes the MIDDLE. End-truncation (CSS text-overflow) would render
+   several arms as the same string. The full name stays in the row's title. */
+function shortArm(arm) {
+  /* The leading cmaf…/fm… tokens are exactly what the Causal and FM/GLM
+     columns beside the name already show, so they are dropped here rather than
+     spent on width that the distinguishing tail needs. */
+  const a = arm.replace(/_2Mb$/, '').replace(/^cmaf\d+_(fm\d+_)?/, '');
+  if (a.length <= 26) return a;
+  return a.slice(0, 10) + '…' + a.slice(-14);
+}
+
+/* The two floors are one setting in every arm that records both; they only get
+   separate halves in the cell if an arm ever sets them apart. */
+const fmGlmLabel = sim => (sim.fm_min_maf === sim.min_maf
+  ? MAF_LABEL(sim.fm_min_maf)
+  : `${MAF_LABEL(sim.fm_min_maf)}/${MAF_LABEL(sim.min_maf)}`);
+
+function tableRowData(sim) {
+  /* The whole column set follows the loci switch: under "significant" a true
+     positive counts only if its GWAS trait would be found, a false positive
+     likewise, and the TPR/FPR denominator becomes the significant-locus count. */
+  const sigOnly = state.tableLoci === 'sig';
+  const c5 = counts(sim, state.panel, 0.5, sigOnly, state.gwasN);
+  const c9 = counts(sim, state.panel, 0.9, sigOnly, state.gwasN);
+  return {
+    sim,
+    id: `${sim.category} · ${sim.arm}`,
+    causal: sim.causal_cut === 'power' ? 'power' : causalLabel(sim.causal_cut),
+    fmglm: fmGlmLabel(sim),
+    reps: sim.replicates,
+    /* n can be 0 under the significant-loci switch — several arms have no
+       findable locus at all at small GWAS sizes — so every rate is guarded
+       rather than divided into a zero denominator. */
+    n: c5 ? c5.n : 0,
+    tpr50: c5 && c5.n ? c5.tp / c5.n : null,
+    fpr50: c5 && c5.n ? c5.fp / c5.n : null,
+    fdr50: fdrOf(c5),
+    tpr90: c9 && c9.n ? c9.tp / c9.n : null,
+    fpr90: c9 && c9.n ? c9.fp / c9.n : null,
+    fdr90: fdrOf(c9),
+    calls50: c5 ? c5.tp + c5.fp : 0,
+    calls90: c9 ? c9.tp + c9.fp : 0,
+  };
+}
+
+function renderTable() {
+  /* Hidden means not rendered at all, not merely invisible: the whole table is
+     recomputed from the trait rows on every state change, and the comparison
+     boxes take the freed width. */
+  document.getElementById('tablepane').style.display = state.showTable ? '' : 'none';
+  if (!state.showTable) return;
+
+  const sigOnly = state.tableLoci === 'sig';
+  document.getElementById('tablecaption').innerHTML =
+    `Percentages at eQTL panel <b>n = ${PANEL_N[state.panel]}</b>, scoring ` +
+    (sigOnly ? `only loci a GWAS of <b>n = ${fmtInt(state.gwasN)}</b> would find` : '<b>all</b> GWAS traits') +
+    `: TPR / FPR out of the n scored, FDR out of the calls made. Arm names drop their <code>cmaf…_fm…</code> prefix (the Causal and FM/GLM columns carry it); hover a row for the full name. Click a row to load it into box ${state.active + 1}.`;
+
+  const q = state.filter.trim().toLowerCase();
+  let rows = SIMS.map(tableRowData);
+  if (q) rows = rows.filter(r => (r.sim.arm + ' ' + r.sim.category + ' ' + r.sim.species + ' ' + r.causal + ' ' + r.fmglm).toLowerCase().includes(q));
+  const { col, dir } = state.sort;
+  rows.sort((a, b) => {
+    const x = a[col], y = b[col];
+    if (x === y) return a.id.localeCompare(b.id);
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
+  });
+
+  const shownIds = new Set(state.boxes.slice(0, state.n).map(b => { const s = boxSim(b); return s ? s.id : null; }));
+  const cols = TABLE_COLS.map(c => `<col${c.w ? ` style="width:${c.w}"` : ''}>`).join('');
+  const head = TABLE_COLS.map(c =>
+    `<th data-col="${c.id}" class="${c.left ? 'left' : ''}"${c.title ? ` title="${esc(c.title)}"` : ''}>${esc(c.label)}${state.sort.col === c.id ? ` <span class="arrow">${dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`).join('');
+  const body = rows.map(r => `<tr data-sim="${esc(r.sim.id)}" class="${shownIds.has(r.sim.id) ? 'shown' : ''}" title="${esc(r.sim.category_label || '')} — ${esc(r.sim.arm)}">
+      <td class="left"><span class="catdot" style="background:${r.sim.color}"></span>${esc(r.sim.category)} · ${esc(shortArm(r.sim.arm))}</td>
+      <td>${esc(r.causal)}</td><td>${esc(r.fmglm)}</td><td>${r.reps}</td><td>${r.n}</td>
+      <td>${r.tpr50 === null ? '–' : (100 * r.tpr50).toFixed(1)}</td>
+      <td>${r.fpr50 === null ? '–' : (100 * r.fpr50).toFixed(1)}</td>
+      <td ${tipAttr(`FDR at RCP > 0.5: ${r.fdr50 === null ? 'no calls made' : `${(100 * r.fdr50).toFixed(1)}% — ${Math.round(r.fdr50 * r.calls50)} of ${r.calls50} calls wrong`}`)}>${r.fdr50 === null ? '–' : (100 * r.fdr50).toFixed(1)}</td>
+      <td>${r.tpr90 === null ? '–' : (100 * r.tpr90).toFixed(1)}</td>
+      <td>${r.fpr90 === null ? '–' : (100 * r.fpr90).toFixed(1)}</td>
+      <td ${tipAttr(`FDR at RCP > 0.9: ${r.fdr90 === null ? 'no calls made' : `${(100 * r.fdr90).toFixed(1)}% — ${Math.round(r.fdr90 * r.calls90)} of ${r.calls90} calls wrong`}`)}>${r.fdr90 === null ? '–' : (100 * r.fdr90).toFixed(1)}</td></tr>`).join('');
+  document.getElementById('tablewrap').innerHTML =
+    `<table class="simtable"><colgroup>${cols}</colgroup><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+/* =======================================================================
+   Rendering: the comparison boxes
+   ======================================================================= */
+function boxControlsHTML(i, b) {
+  const matches = boxMatches(b);
+  const sim = boxSim(b);
+  const catOpts = CATEGORIES.map(c => {
+    const any = SIMS.find(s => s.category === c);
+    return `<option value="${c}"${c === b.cat ? ' selected' : ''}>${c} — ${esc((any.category_label || '').replace(/^[A-Z]\s+/, ''))}</option>`;
+  }).join('');
+  const armOpts = matches.length
+    ? matches.map(s => `<option value="${esc(s.arm)}"${sim && s.arm === sim.arm ? ' selected' : ''}>${esc(s.arm)}</option>`).join('')
+    : '<option>— no arm matches —</option>';
+
+  const causalOpts = [{ value: 'any', label: 'any' }].concat(CAUSAL_VALUES.map(v => ({ value: v, label: causalLabel(v) })));
+  const fmOpts = [{ value: 'any', label: 'any' }].concat(FM_VALUES.map(v => ({ value: v, label: v === 'null' ? 'n/r' : pct(+v) })));
+
+  return `<div class="boxhead">
+    <div class="toprow">
+      <span class="boxnum" data-act="${i}" title="the box a table-row click loads into">${i + 1}</span>
+      <select class="b-cat" data-i="${i}" style="flex:1 1 190px;min-width:0" title="${esc(sim ? sim.category_label : 'simulation category')}">${catOpts}</select>
+      <select class="b-arm" data-i="${i}" style="flex:1 1 160px;min-width:0" title="parameter arm">${armOpts}</select>
+    </div>
+    <div class="selrow">
+      <div class="ctl"><label class="lbl">Causative</label><span class="seg">${segHTML('causal-' + i, causalOpts, b.causal, 'b-causal')}</span></div>
+      <div class="ctl"><label class="lbl">FM / GLM</label><span class="seg">${segHTML('fm-' + i, fmOpts, b.fm, 'b-fm')}</span></div>
+    </div>
+    ${sim ? `<div class="simline">
+       <span class="k">species</span> <b>${esc(sim.species)}</b> ·
+       <span class="k">reps</span> <b>${sim.replicates}</b> ·
+       <span class="k">GWAS</span> <b>${sim.gwas_mult}×</b> <span class="k">GTEx</span> <b>${sim.gtex_mult}×</b> ·
+       <span class="k">causal</span> <b>${esc(causalLabel(sim.causal_cut))}</b> ·
+       <span class="k">fm</span> <b>${esc(MAF_LABEL(sim.fm_min_maf))}</b> ·
+       <span class="k">glm</span> <b>${esc(MAF_LABEL(sim.min_maf))}</b> ·
+       <span class="k">r²</span> <b>${sim.fm_r2}</b>
+       ${matches.length > 1 ? `<span class="k"> · ${matches.length} arms match</span>` : ''}
+     </div>` : `<div class="simline warnline">No simulation matches this combination — widen one of the filters.</div>`}
+  </div>`;
+}
+
+/* Shared y-axis: the tallest MAF bin over the simulations on screen, so bars
+   in different boxes are directly comparable. */
+function sharedMaxima(sims) {
+  if (!state.sharedY) return {};
+  const m = { outcomes_all: 0, outcomes_sig: 0, af_all: 0, af_neutral: 0, af_selected: 0, af_box: 0 };
+  for (const sim of sims) {
+    for (const [key, sig] of [['outcomes_all', false], ['outcomes_sig', true]]) {
+      const rows = countsByMafBin(sim, state.panel, state.rcp, sig, state.gwasN);
+      if (rows) m[key] = Math.max(m[key], ...rows.map(r => r.n));
+    }
+    const af = sim.af[state.afFloor];
+    if (!af) continue;
+    for (const w of ['all', 'neutral', 'selected']) {
+      const tot = af[w].reduce((a, b) => a + b, 0);
+      const vals = state.afY === 'pct' ? af[w].map(v => (tot ? 100 * v / tot : 0)) : af[w];
+      m['af_' + w] = Math.max(m['af_' + w], ...vals);
+    }
+    for (const b of SELCO_BINS) if (af.box[b]) m.af_box = Math.max(m.af_box, af.box[b].ymax);
+  }
+  return m;
+}
+
+function plotBlock(title, note, body) {
+  return `<div class="plotblock"><div class="plottitle">${esc(title)}</div>${note ? `<div class="plotnote">${note}</div>` : ''}${body}</div>`;
+}
+
+function renderBoxBody(sim, ymax) {
+  if (!sim) return '<div class="empty">Nothing selected.</div>';
+  if (!state.plots.length) return '<div class="empty">No plots selected — pick some above.</div>';
+  let h = '';
+  for (const p of PLOT_TYPES) {
+    if (!state.plots.includes(p.id)) continue;
+    switch (p.id) {
+      case 'params':
+        h += plotBlock('Parameters', '', tableParams(sim)); break;
+      case 'results':
+        h += plotBlock('Results', `significant loci at GWAS n = ${fmtInt(state.gwasN)}`, tableResults(sim, state.gwasN)); break;
+      case 'prc':
+        h += plotBlock('Precision–recall', `eQTL panel n = ${PANEL_N[state.panel]}, RCP swept 0 → 1`,
+          chartPRC(sim, state.panel, state.gwasN)); break;
+      case 'outcomes_all':
+        h += plotBlock('fastEnloc outcomes — all loci', `RCP > ${state.rcp}, eQTL panel n = ${PANEL_N[state.panel]}`,
+          chartOutcomes(sim, state.panel, state.rcp, false, state.gwasN, ymax.outcomes_all)); break;
+      case 'outcomes_sig':
+        h += plotBlock('fastEnloc outcomes — significant loci', `RCP > ${state.rcp}, eQTL panel n = ${PANEL_N[state.panel]}, GWAS n = ${fmtInt(state.gwasN)}`,
+          chartOutcomes(sim, state.panel, state.rcp, true, state.gwasN, ymax.outcomes_sig)); break;
+      case 'af_box':
+        h += plotBlock('MAF by selection coefficient', afNote(sim), chartSelcoBox(sim, state.afFloor, ymax.af_box)); break;
+      case 'af_all':
+        h += plotBlock('Allele frequencies — all variants', afNote(sim), chartAFHist(sim, 'all', state.afFloor, ymax.af_all)); break;
+      case 'af_neutral':
+        h += plotBlock('Allele frequencies — neutral variants', afNote(sim), chartAFHist(sim, 'neutral', state.afFloor, ymax.af_neutral)); break;
+      case 'af_selected':
+        h += plotBlock('Allele frequencies — non-neutral variants', afNote(sim), chartAFHist(sim, 'selected', state.afFloor, ymax.af_selected)); break;
+    }
+  }
+  return h;
+}
+const afNote = sim => `GWAS panel variants, ${sim.replicates} replicate${sim.replicates > 1 ? 's' : ''} pooled` +
+  (state.afFloor === '0' ? '' : `, MAF > ${pct(+state.afFloor)}`);
+
+function renderBoxes() {
+  const sims = [];
+  for (let i = 0; i < state.n; i++) sims.push(boxSim(state.boxes[i]));
+  const ymax = sharedMaxima(sims.filter(Boolean));
+
+  const cols = Math.min(state.n, 3);
+  const el = document.getElementById('boxes');
+  el.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  el.innerHTML = state.boxes.slice(0, state.n).map((b, i) =>
+    `<div class="box ${i === state.active ? 'active' : ''}" data-i="${i}">
+       ${boxControlsHTML(i, b)}
+       <div class="boxbody">${renderBoxBody(sims[i], ymax)}</div>
+     </div>`).join('');
+}
+
+function renderAll() { renderTable(); renderCompare(); renderBoxes(); saveState(); }
+
+/* =======================================================================
+   Events
+   ======================================================================= */
+document.getElementById('nboxes').addEventListener('change', e => {
+  state.n = Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 1));
+  e.target.value = state.n;
+  while (state.boxes.length < state.n) {
+    const last = state.boxes[state.boxes.length - 1];
+    state.boxes.push(JSON.parse(JSON.stringify(last || boxFromSim(SIMS[0]))));
+  }
+  if (state.active >= state.n) state.active = state.n - 1;
+  renderAll();
+});
+
+document.getElementById('globalcontrols').addEventListener('change', e => {
+  const n = e.target.name;
+  if (n === 'g-panel') state.panel = e.target.value;
+  else if (n === 'g-rcp') { state.rcp = parseFloat(e.target.value); document.getElementById('rcpslider').value = state.rcp; document.getElementById('rcpval').textContent = state.rcp.toFixed(2); }
+  else if (n === 'g-floor') state.afFloor = e.target.value;
+  else if (n === 'g-afy') state.afY = e.target.value;
+  else if (e.target.id === 'gwasn') state.gwasN = parseInt(e.target.value, 10);
+  else if (e.target.id === 'sharedy') state.sharedY = e.target.checked;
+  else if (e.target.id === 'showtable') state.showTable = e.target.checked;
+  else return;
+  renderAll();
+});
+document.getElementById('hidetable').addEventListener('click', () => {
+  state.showTable = false;
+  renderControls(); renderAll(); measureHeader();
+});
+document.getElementById('rcpslider').addEventListener('input', e => {
+  state.rcp = parseFloat(e.target.value);
+  document.getElementById('rcpval').textContent = state.rcp.toFixed(2);
+  /* Keep the 0.5 / 0.9 segment in sync: it deselects once the slider moves off. */
+  document.querySelectorAll('input[name=g-rcp]').forEach(r => { r.checked = (parseFloat(r.value) === state.rcp); });
+  renderBoxes(); saveState();
+});
+
+document.getElementById('plotbar').addEventListener('change', e => {
+  if (e.target.id === 'showcompare') {
+    state.showCompare = e.target.checked;
+    renderCompare(); saveState(); return;
+  }
+  if (!e.target.classList.contains('plotchk')) return;
+  const id = e.target.value;
+  state.plots = e.target.checked
+    ? PLOT_TYPES.filter(p => p.id === id || state.plots.includes(p.id)).map(p => p.id)
+    : state.plots.filter(p => p !== id);
+  renderBoxes(); saveState();
+});
+document.getElementById('allplots').addEventListener('click', () => {
+  state.plots = PLOT_TYPES.map(p => p.id); renderControls(); renderBoxes(); saveState();
+});
+document.getElementById('noplots').addEventListener('click', () => {
+  state.plots = []; renderControls(); renderBoxes(); saveState();
+});
+
+document.getElementById('rowbar').addEventListener('change', e => {
+  if (!e.target.classList.contains('rowchk')) return;
+  const id = e.target.value;
+  state.rows = e.target.checked
+    ? RESULT_ROWS.filter(r => r.id === id || state.rows.includes(r.id)).map(r => r.id)
+    : state.rows.filter(r => r !== id);
+  /* The comparison chart plots exactly the selected percentage rows, so it
+     tracks this control too. */
+  renderCompare(); renderBoxes(); saveState();
+});
+document.getElementById('allrows').addEventListener('click', () => {
+  state.rows = RESULT_ROWS.map(r => r.id); renderControls(); renderCompare(); renderBoxes(); saveState();
+});
+document.getElementById('norows').addEventListener('click', () => {
+  state.rows = []; renderControls(); renderCompare(); renderBoxes(); saveState();
+});
+
+document.getElementById('tablefilter').addEventListener('input', e => {
+  state.filter = e.target.value; renderTable(); saveState();
+});
+document.getElementById('segtloci').addEventListener('change', e => {
+  if (e.target.name !== 't-loci') return;
+  state.tableLoci = e.target.value;
+  renderControls(); renderTable(); saveState();
+});
+document.getElementById('tablewrap').addEventListener('click', e => {
+  const th = e.target.closest('th');
+  if (th) {
+    const col = th.dataset.col;
+    state.sort = { col, dir: state.sort.col === col ? -state.sort.dir : (col === 'id' ? 1 : -1) };
+    renderTable(); saveState(); return;
+  }
+  const tr = e.target.closest('tr[data-sim]');
+  if (!tr) return;
+  const sim = SIMS.find(s => s.id === tr.dataset.sim);
+  if (!sim) return;
+  state.boxes[state.active] = boxFromSim(sim);
+  renderAll();
+});
+
+document.getElementById('boxes').addEventListener('change', e => {
+  const i = parseInt(e.target.dataset.i ?? e.target.name?.split('-')[1], 10);
+  if (Number.isNaN(i)) return;
+  const b = state.boxes[i];
+  if (e.target.classList.contains('b-cat')) {
+    b.cat = e.target.value;
+    /* Keep the arm if the new category still has it; otherwise the first match. */
+    const m = boxMatches(b);
+    if (!m.some(s => s.arm === b.arm) && m.length) b.arm = m[0].arm;
+  } else if (e.target.classList.contains('b-arm')) {
+    b.arm = e.target.value;
+  } else if (e.target.classList.contains('b-causal')) {
+    b.causal = e.target.value;
+    const m = boxMatches(b);
+    if (!m.some(s => s.arm === b.arm) && m.length) b.arm = m[0].arm;
+  } else if (e.target.classList.contains('b-fm')) {
+    b.fm = e.target.value;
+    const m = boxMatches(b);
+    if (!m.some(s => s.arm === b.arm) && m.length) b.arm = m[0].arm;
+  } else return;
+  state.active = i;
+  renderAll();
+});
+document.getElementById('boxes').addEventListener('click', e => {
+  /* Controls handle themselves in the change listener; re-rendering here would
+     tear the DOM out from under an open <select>. */
+  if (e.target.closest('select, input, label')) return;
+  const box = e.target.closest('.box');
+  if (!box) return;
+  const i = parseInt(box.dataset.i, 10);
+  if (i !== state.active) { state.active = i; renderAll(); }
+});
+
+/* Tooltip layer: one floating node, driven by data-tip attributes. */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const t = e.target.closest?.('[data-tip]');
+  if (!t) { tip.style.opacity = 0; return; }
+  tip.textContent = t.getAttribute('data-tip');
+  tip.style.opacity = 1;
+  const pad = 14, r = tip.getBoundingClientRect();
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - pad;
+  tip.style.left = x + 'px';
+  tip.style.top = y + 'px';
+});
+
+renderControls();
+renderAll();
+measureHeader();
+</script>
+</body>
+</html>

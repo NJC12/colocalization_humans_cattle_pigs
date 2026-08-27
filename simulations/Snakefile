@@ -17,7 +17,7 @@ import sys
 SIM_REPO_DIR = os.path.dirname(os.path.abspath(workflow.snakefile))
 sys.path.insert(0, SIM_REPO_DIR)
 
-from helpers import cattle_demography, params_record, paths, search_dirs
+from helpers import cattle_demography, human_demography, params_record, paths, search_dirs
 
 
 # ---------- config validation + defaults ----------
@@ -81,6 +81,36 @@ if config["pipeline"] == "cattle_baseline_from_midpoint":
 
 # Defaults
 config.setdefault("already_includes_neutral", True)
+# Which human demographic model stage 1 runs, and which of its populations it
+# samples. OutOfAfrica_2T12 is every arm through category L; FinnishWang2014 is
+# the demes graph categories M (FIN) and N (NFE) run. Both defaulted rather than
+# required so every config written before the keys existed keeps producing
+# hts_{seed}.ts and stays adoptable.
+#
+# ORDER MATTERS: the population default comes from the MODEL, so the model has
+# to be resolved first. A config that names FinnishWang2014 and no population
+# gets FIN, not EUR -- EUR is not a population of that model at all.
+config.setdefault("demographic_model", human_demography.DEFAULT_MODEL)
+human_demography.validate_model(config["demographic_model"])
+config.setdefault(
+    "population",
+    human_demography.default_population(config["demographic_model"]))
+human_demography.validate_population(config["population"],
+                                     config["demographic_model"])
+# Only the `human` pipeline reads either key. The cattle pipelines have no such
+# choice, and human_neutral (category H) pins OutOfAfrica_2T12/EUR as constants
+# of its own so it cannot drift from A. Setting either key anywhere else would
+# be silently ignored, and silently ignored is how an arm ends up not being the
+# arm someone thinks they ran -- so refuse instead.
+if config["pipeline"] != "human":
+    for _k, _default in (("demographic_model", human_demography.DEFAULT_MODEL),
+                         ("population", human_demography.DEFAULT_POPULATION)):
+        if config[_k] != _default:
+            raise ValueError(
+                f"{_k}={config[_k]!r} is read only by the `human` pipeline, "
+                f"but this config runs {config['pipeline']!r}, which would "
+                "ignore it."
+            )
 config.setdefault("neutral_trait_vars", False)
 # Categories H and I (pipelines human_neutral / cattle_neutral). The two neutral
 # models are not composable -- see create_gwas_files_and_phenotypes.py, which
@@ -92,6 +122,33 @@ if config["synthetic_dfe_effects"] and config["neutral_trait_vars"]:
         "two different neutral models. Categories H and I set the former; B and D set "
         "the latter."
     )
+# Categories O and P: keep only this fraction of the NEUTRAL (selco == 0) sites,
+# which is distributionally identical to having run the 8.4e-9 neutral overlay at
+# `neutral_keep_fraction * 8.4e-9` (Poisson thinning) -- see
+# helpers/neutral_thinning.py. 1.0 keeps everything and emits no path segment, so
+# every arm that predates the key is unaffected.
+config.setdefault("neutral_keep_fraction", paths.NO_NEUTRAL_THINNING)
+if not (0 < float(config["neutral_keep_fraction"]) <= 1):
+    raise ValueError(
+        f"neutral_keep_fraction must be in (0, 1], got "
+        f"{config['neutral_keep_fraction']!r}"
+    )
+# Thinning is only meaningful where the neutral class is BACKGROUND. Under
+# synthetic_dfe_effects (H, I, K, L) the causal loci ARE the neutral variants, and
+# under neutral_trait_vars (B, D) the effect RECIPIENTS are, so thinning would
+# halve the one pool those categories are defined by while looking like a change
+# to variant density. Refuse rather than silently produce a fifth neutral model.
+if float(config["neutral_keep_fraction"]) != paths.NO_NEUTRAL_THINNING:
+    for _k in ("synthetic_dfe_effects", "neutral_trait_vars"):
+        if config[_k]:
+            raise ValueError(
+                f"neutral_keep_fraction={config['neutral_keep_fraction']!r} cannot be "
+                f"combined with {_k}=True: that category draws its causal loci from "
+                "the selco == 0 variants, so thinning them changes the causal pool "
+                "rather than the background. Categories O and P thin A's and E's "
+                "genomes, where the causal pool is selco != 0 and is untouched."
+            )
+
 # MAF floor a variant must clear to be eligible as CAUSATIVE: the central
 # selected pool, the central neutral recipient pool used under
 # neutral_trait_vars, and the flanking GTEx-only loci.
@@ -151,6 +208,25 @@ if not (0 < float(config["sampling_min_power"]) < 1):
     raise ValueError(
         f"sampling_min_power must be in (0, 1), got {config['sampling_min_power']!r}"
     )
+# Saturate the sampling weight: past this power a variant is treated as certain
+# to be found, so extra power buys no extra representation in the causal set.
+# 1.0 is a no-op (power is already bounded by 1), which is where every arm that
+# predates the knob sits. It shapes the WEIGHT only -- sampling_min_power above
+# still gates pool eligibility on raw power. helpers/causal_power.py explains why
+# those are different questions.
+config.setdefault("sampling_power_plateau", paths.NO_POWER_PLATEAU)
+if not (0 < float(config["sampling_power_plateau"]) <= 1):
+    raise ValueError(
+        "sampling_power_plateau must be in (0, 1], got "
+        f"{config['sampling_power_plateau']!r} (1.0 means no plateau)"
+    )
+if (float(config["sampling_power_plateau"]) != paths.NO_POWER_PLATEAU
+        and config["causal_sampling"] != "power"):
+    raise ValueError(
+        f"sampling_power_plateau={config['sampling_power_plateau']!r} only has meaning "
+        f"under causal_sampling: power, but this run uses {config['causal_sampling']!r}. "
+        "A uniform draw has no weight to saturate."
+    )
 config.setdefault("sampling_min_pool_multiple", 2)
 if float(config["sampling_min_pool_multiple"]) < 1:
     raise ValueError(
@@ -163,6 +239,14 @@ if config["causal_sampling"] == "power" and not config.get("n_central_traits"):
         "every central selco != 0 variant (no MAF floor), so 'use all eligible' would "
         "make every one of them causative."
     )
+
+# How many causal loci the arm has. No setdefault: every config states it, and a
+# silent default here would let a --config typo halve an arm without saying so.
+# n_flank_gtex_traits defaults to 50 in rules/common.smk and is validated with it.
+for _k in ("n_central_traits", "n_flank_gtex_traits"):
+    _v = config.get(_k, 50 if _k == "n_flank_gtex_traits" else None)
+    if _v is not None and (int(_v) < 0 or int(_v) != float(_v)):
+        raise ValueError(f"{_k} must be a non-negative integer, got {config[_k]!r}")
 
 config.setdefault("ld_ctrl", 0.75)
 config.setdefault("dapg_window", 1_000_000)

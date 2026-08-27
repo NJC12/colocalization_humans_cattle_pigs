@@ -1,0 +1,129 @@
+# CATEGORY N -- human, NON-FINNISH EUROPEAN (the companion arm to M). 2 Mb region, g5t20 cell. ROUND 3.
+#
+# THIS FILE AND config/human_fin_2Mb_g5t20_r3.yaml ARE THE SAME FILE
+# EXCEPT FOR `basename`, `population`, the two seeds, the workdir/publishdir
+# leaf and this header. Diff them. That identity is the experiment:
+#
+#   M - N   the Finnish founder event ALONE. Same demographic model, same Q,
+#           same DFE, same rates, same sample size, same trait architecture,
+#           same stages 2-5. Only which deme is retained differs.
+#   N - A   the model swap alone: Wang-2014 NFE against Tennessen-2012 EUR.
+#
+# M against A on its own would swap the founder event AND the whole model at
+# once (root 8,100 vs 7,310, present 111,394 vs 512,000, different growth
+# schedules), which is why N exists.
+#
+# THE MODEL. `demographic_model: FinnishWang2014` selects the demes graph at
+# demography/finnish_demo_wang_2014.yaml -- Wang et al. 2014 (Am J Hum Genet
+# 94:710-720), Table S2 class 3. NFE bottlenecks to N=2,000 and grows at
+# 1.5%/generation for 270 generations to 111,394; FIN splits off 100 generations
+# ago at N=1,000, grows slowly for 87 generations then explosively for 13, to
+# 34,458, with one-way 2%/generation gene flow from NFE. It is NOT an stdpopsim
+# catalog model; helpers/human_demography.MODELS is the registry that reaches
+# it. Three of its parameters are midpoints of ranges the paper reports -- see
+# the notes at the bottom of the demes file.
+#
+# WHY Q_scaling IS 3 AND NOT 10. This is forced, not a preference. stdpopsim's
+# SLiM engine refuses to sample more individuals than the Q-RESCALED deme holds
+# at the sampling tick. Stage 1 samples gwas_size + 1000 = 9,000:
+#
+#     individuals ALIVE at the sampling tick, measured from SLiM:
+#       Q      FIN      NFE      verdict for a 9,000-individual draw
+#      10    2,266   10,653      FIN fails
+#       4    7,491   27,437      FIN fails
+#       3    9,988   36,583      both OK -- FIN by a margin of 988
+#
+# These are not present_size/Q: stdpopsim rounds epoch boundaries to whole ticks
+# and truncates the tail of the growth phase, so the naive figure overshoots by
+# 13-34%. helpers/human_demography.SLIM_CAPACITY holds the measured numbers and
+# the recipe. NFE would fit at Q=10; it runs at 3 anyway, because M - N is only
+# the founder event if the two arms are Q-matched.
+#
+# The cost is roughly 11x A's stage 1 (SLiM scales as 1/Q^2 and the burn-in
+# dominates: 10 x 8,100 / 3 = 27,000 ticks at 2,700 diploids), so ~12 h rather
+# than ~1 h. rules/stage1_human.smk routes any small-L run below Q=10 to
+# `medium` with 4 days and 16 GB for exactly this reason. Q_scaling is in
+# params_record.STAGE2_KEYS, so these arms can never silently adopt A's stage 2.
+#
+# STAGE 1 RUNS HERE. There is no earlier tree sequence to adopt: the stage-1
+# file is hts_finwang_NFE_{seed}.ts, not hts_{seed}.ts, precisely so no
+# EUR or AFR run can satisfy it -- adoption matches on filename plus seed, and
+# for human names the seed half never fires, so the filename is the whole guard.
+# Leave stage1_search_dirs empty.
+#
+# The g5t20 cell itself is unchanged from A's: gwas_scaling 5, gtex_scaling 20,
+# an ASYMMETRIC cell with a well-powered eQTL side against a weak GWAS side.
+#
+# Per-replicate: override stage1_seed, stage2_seed, workdir and publishdir on
+# the command line. Seeds follow seed = 10*letter_index + replicate, with
+# M the thirteenth letter and N the fourteenth: N1 = 141 ... N9 = 149.
+
+pipeline: human
+species: human
+basename: human_nfe
+species_prefix: h
+
+# ---- Demography parameters ----
+demographic_model: FinnishWang2014
+population: NFE
+# 3, not A's 10: forced by the sampling cap on the FIN deme. See the
+# header. Do not raise it without re-checking that cap.
+Q_scaling: 3
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t20 cell (x35 run uses 35)
+gtex_scaling: 20       # g5t20 cell (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False   # category A; B overrides this to True via --config
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 141
+stage2_seed: 141
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the
+# round-3 x35 stage1 dir so stage 1 is reused, not rerun). Leave empty here.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/human_nfe
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/human_nfe
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default

@@ -52,17 +52,33 @@
 # (20 -> 40 -> 60 min) gets it through.
 #
 # CATEGORIES. Originally A/E; B, F and G were added when the category axis was
-# extended to this arm. Both the stage-1 AND the stage-2 source for B/F/G is the
+# extended to this arm, then K/L (background selection) and M/N (the Wang 2014
+# Finnish founder pair), all four of which build the whole pipeline here rather
+# than adopting stage 2. Both the stage-1 AND the stage-2 source for B/F/G is the
 # cmaf_0.001 root, so submit_2Mb_r3_cmaf_replicates.sh must have COMPLETED for
 # the same replicate before this script can run it -- stage-2 adoption needs
 # .stage2.done, which is stricter than the psamp arm's stage-1-only dependency.
 # The per-replicate pre-flight below is what catches a missing one.
 #
+#
+# CATEGORIES O AND P (low heterozygosity). O is A's genome and P is E's, with a
+# measured fraction of the NEUTRAL (selco == 0) sites deleted in stage 2, sized so
+# pi halves (`neutral_keep_fraction`, helpers/neutral_thinning.py). They are the
+# ONLY categories that share another category's seed band -- O{N} runs at A's seed
+# 1{N} and P{N} at E's 5{N} -- because they ADOPT their parent's stage-1 tree
+# sequence rather than simulating a new one. That is the point: O_i's variant set
+# is a strict subset of A_i's, the 50 central causal loci are the same 50
+# positions, and A - O isolates variant density with no replicate noise in it.
+# stage1_donor_of() below is what redirects the stage-1 lookup. They must always
+# rebuild stage 2 (neutral_keep_fraction is in params_record.STAGE2_KEYS), and
+# they must never be launched from submit_2Mb_r3_cmaf_replicates.sh, which builds
+# stage 1. See "Categories O and P" in README_snakemake.md.
 # Run from a login node:
 #   bash submit_2Mb_r3_cmaf_fm001.sh
 #   DRY=1 bash submit_2Mb_r3_cmaf_fm001.sh          # print, submit nothing
 #   REPS="A1 E1" bash submit_2Mb_r3_cmaf_fm001.sh   # subset
 #   REPS="B1 F1 G1" bash submit_2Mb_r3_cmaf_fm001.sh  # the B/F/G pilot
+#   REPS="O1 P1" bash submit_2Mb_r3_cmaf_fm001.sh     # the low-het pilot
 
 set -euo pipefail
 REPO=/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/snakemake
@@ -95,6 +111,13 @@ OUT_PUBLISH="$PUBLISH/simulations_round_3_2Mb_${CELL}_cmaf_${CAUSAL_FLOOR}_fm_${
 #   E{N} -> 5{N}   cattle baseline from midpoint
 #   F{N} -> 6{N}   cattle + positive selection, WITH continued bottlenecking
 #   G{N} -> 7{N}   cattle + positive selection, WITHOUT it
+#   J{N} -> 10{N}  human, AFRICAN ancestry (A's config + population: AFR)
+#   K{N} -> 11{N}  human, BACKGROUND SELECTION (A's genome, neutral causal loci)
+#   L{N} -> 12{N}  cattle, BACKGROUND SELECTION (E's genome, neutral causal loci)
+#   M{N} -> 13{N}  human, FINNISH founder demography (Wang 2014, FIN deme)
+#   N{N} -> 14{N}  human, NON-FINNISH European (same model, NFE deme)
+# The rule is seed = 10*letter_index + replicate (A=1 ... I=9, J=10), which
+# stops reading off as a tens digit at J but keeps every band disjoint.
 seed_of() {
     local n="${1:1}"
     case "${1:0:1}" in
@@ -104,7 +127,34 @@ seed_of() {
         F) echo "6${n}" ;;
         G) echo "7${n}" ;;
         H) echo "8${n}" ;; I) echo "9${n}" ;;
+        J) echo "10${n}" ;;
+        K) echo "11${n}" ;; L) echo "12${n}" ;;
+        M) echo "13${n}" ;; N) echo "14${n}" ;;
+        # O and P SHARE A's and E's seed bands, and that is not an oversight.
+        # Every other category has a private band because it is a different
+        # genetic simulation; O and P are the SAME simulation with a fraction of
+        # the neutral sites deleted in stage 2, so O{N} adopts A{N}'s tree
+        # sequence and P{N} adopts E{N}'s, at those seeds, and O1's variant set
+        # is a strict subset of A1's. That pairing is why A - O carries no
+        # replicate noise. Consequence: O and P must never run their own stage 1
+        # (see stage1_donor_of below), and they must never adopt A's or E's
+        # stage 2 (neutral_keep_fraction is in params_record.STAGE2_KEYS, which
+        # makes that a loud refusal rather than a silent wrong answer).
+        O) echo "1${n}" ;; P) echo "5${n}" ;;
         *) echo "ERROR: no seed convention for '$1'" >&2; return 1 ;;
+    esac
+}
+
+# Which replicate's stage-1 tree sequence a run adopts. The identity for every
+# category except O and P, which reuse A's and E's rather than simulating their
+# own -- the pairing described in seed_of(). Their seeds already match, so the
+# seed-strict lookup succeeds; only the DIRECTORY has to be redirected, because
+# it is named for the replicate rather than for the seed.
+stage1_donor_of() {
+    case "${1:0:1}" in
+        O) echo "A${1:1}" ;;
+        P) echo "E${1:1}" ;;
+        *) echo "$1" ;;
     esac
 }
 
@@ -118,14 +168,48 @@ seed_of() {
 # model. I is the cattle counterpart of H: same drawn-DFE effect sizes, cattle
 # demography, and unlike E/F/G it simulates all twelve epochs itself rather than
 # resuming from the shared ep7 checkpoint.
+#
+# J is category A with `population: AFR` -- the same OutOfAfrica_2T12 run, the
+# other branch sampled. It gets its own file rather than a --config override
+# (which is how B is done) because it also needs its own basename and seed band,
+# and because one file per genetic model is the rule everywhere else here.
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
+#
+#
+# M and N are the FINNISH FOUNDER PAIR, and unlike B/K/L they need real config
+# files: `demographic_model: FinnishWang2014` selects a demes graph that is not
+# in stdpopsim's catalog, and it forces `Q_scaling: 3` because stdpopsim's SLiM
+# engine will not sample 9,000 individuals out of a FIN deme that holds 2,266 at
+# Q=10 or 7,491 at Q=4. At Q=3 it holds 9,988 -- a margin of 988. M samples FIN, N samples NFE, and the two files are otherwise identical:
+#   M - N  isolates the Finnish founder event
+#   N - A  isolates the model swap (Wang NFE vs Tennessen EUR)
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
+# K and L are the BACKGROUND SELECTION pair, and they share A's and E's configs
+# the way B shares A's: the stage-1 genetic model is byte-identical to A/E, so
+# there is nothing to put in a file of their own. What differs is one override,
+# synthetic_dfe_effects=True, which does two things at once -- it draws the
+# causal loci from the strictly NEUTRAL variants (selco == 0) instead of the
+# selected ones, and it takes their effect sizes from the truncated DFE rather
+# than from the variant's own coefficient. So K has A's genome, shaped by
+# selection, with H's effect model on top; L is the same for E and I.
+#   A - K  isolates the effect assignment (same genealogy)
+#   K - H  isolates the genealogy, i.e. background selection (same effect model)
 config_of() {
     case "${1:0:1}" in
-        A|B) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        A|B|K) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        J)   echo "config/human_afr_2Mb_${CELL}_r3.yaml" ;;
+        M)   echo "config/human_fin_2Mb_${CELL}_r3.yaml" ;;
+        N)   echo "config/human_nfe_2Mb_${CELL}_r3.yaml" ;;
+        L)   echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
         H)   echo "config/human_neutral_2Mb_${CELL}_r3.yaml" ;;
         I)   echo "config/cattle_neutral_2Mb_${CELL}_r3.yaml" ;;
         E)   echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
         F)   echo "config/cattle_sel_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
         G)   echo "config/cattle_sel_not_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
+        O)   echo "config/human_lowhet_2Mb_${CELL}_r3.yaml" ;;
+        P)   echo "config/cattle_lowhet_2Mb_${CELL}_r3.yaml" ;;
         *)   return 1 ;;
     esac
 }
@@ -136,6 +220,7 @@ config_of() {
 category_extra() {
     case "${1:0:1}" in
         B) echo "neutral_trait_vars=True" ;;
+        K|L) echo "synthetic_dfe_effects=True" ;;
         *) echo "" ;;
     esac
 }
@@ -155,30 +240,110 @@ if ! grep -q "_fm_thins_candidates" "$REPO/rules/common.smk" 2>/dev/null; then
     exit 1
 fi
 
+# O and P need the neutral-thinning patch. Checked only when they are actually
+# requested, so an A/E launch still works against any checkout carrying the
+# fm-resource patch above. Without it Snakemake rejects the unknown --config key,
+# or an older create_gwas_files_and_phenotypes.py ignores the flag and writes an
+# UN-thinned stage 2 into a directory whose name claims it was thinned.
+if [[ " $REPS " =~ [[:space:]][OP][0-9] ]]; then
+    for MARKER in 'neutral_keep_fraction:helpers/paths.py' \
+                  'neutral_keep_fraction:Snakefile' \
+                  'thin_flag:rules/common.smk' \
+                  'thin_neutral_sites:create_gwas_files_and_phenotypes.py'; do
+        PAT="${MARKER%%:*}"; FILE="${MARKER#*:}"
+        grep -q "$PAT" "$REPO/$FILE" 2>/dev/null || {
+            echo "ERROR: $REPO/$FILE predates the neutral-thinning patch (no '$PAT')." >&2
+            echo "       rsync the repo to O2 before running O/P. Nothing launched." >&2
+            exit 1; }
+    done
+    # An unset neutral_keep_fraction means keep-everything, which would make O a
+    # byte-identical copy of A under a different name. Refuse rather than run it.
+    for ID in $REPS; do
+        case "${ID:0:1}" in O|P) ;; *) continue ;; esac
+        CFG_CHK=$(config_of "$ID")
+        grep -qE '^neutral_keep_fraction:[[:space:]]*[0-9.]+' "$REPO/$CFG_CHK" || {
+            echo "ERROR: $CFG_CHK does not set neutral_keep_fraction." >&2
+            echo "       Run helpers/measure_pi_components.py over the donor" >&2
+            echo "       replicates and pin the measured value first; without it" >&2
+            echo "       ${ID} would be an exact copy of its parent category." >&2
+            echo "       Nothing launched." >&2; exit 1; }
+    done
+fi
+
 declare -A STAGE1_SRC STAGE2_SRC
 for ID in $REPS; do
     CFG=$(config_of "$ID") || { echo "ERROR: unknown replicate '$ID'" >&2; exit 1; }
     [[ -f "$REPO/$CFG" ]] || { echo "ERROR: missing config: $REPO/$CFG" >&2; exit 1; }
     seed_of "$ID" > /dev/null || exit 1
 
-    # Categories H and I build their own stage 1 rather than reusing one. They are
-    # distinct pipelines (human_neutral / cattle_neutral, pure coalescents --
-    # seconds to minutes, not hours), so there
-    # is no predecessor to point at and nothing to save by looking. An empty
+    # Categories H, I, J, K, L, M and N build their own stage 1 rather than
+    # reusing one.
+    # H and I are distinct pipelines (human_neutral / cattle_neutral, pure
+    # coalescents -- seconds to minutes, not hours). J, M and N run the SAME
+    # pipeline as A but a different demography: J samples the AFR branch of
+    # OutOfAfrica_2T12, M and N sample the FIN and NFE demes of the Wang 2014
+    # model. Their tree sequences are hts_AFR_{seed}.ts, hts_finwang_FIN_{seed}.ts
+    # and hts_finwang_NFE_{seed}.ts, so no EUR stage1 dir can satisfy them --
+    # pointing at one would find nothing, and find nothing silently. So there is
+    # no predecessor to point at and nothing to save by looking. An empty
     # STAGE1_SRC tells the controller to omit stage1_search_dirs entirely.
-    if [[ "${ID:0:1}" =~ ^(H|I)$ ]]; then
+    if [[ "${ID:0:1}" =~ ^(H|I|J|K|L|M|N)$ ]]; then
         STAGE1_SRC["$ID"]=""
     else
         S1=""
-        for CAND in "$SRC_ROOT/${ID}/stage1" "$STAGE1_FALLBACK/${ID}/stage1"; do
+        DONOR=$(stage1_donor_of "$ID")   # itself, except O->A and P->E
+        for CAND in "$SRC_ROOT/${DONOR}/stage1" "$STAGE1_FALLBACK/${DONOR}/stage1"; do
             if compgen -G "$CAND/*.ts" > /dev/null; then S1="$CAND"; break; fi
         done
         [[ -n "$S1" ]] || {
-            echo "ERROR: no stage-1 tree sequence for ${ID} in either" >&2
-            echo "       $SRC_ROOT/${ID}/stage1" >&2
-            echo "       $STAGE1_FALLBACK/${ID}/stage1" >&2
+            echo "ERROR: no stage-1 tree sequence for ${ID} (donor ${DONOR}) in either" >&2
+            echo "       $SRC_ROOT/${DONOR}/stage1" >&2
+            echo "       $STAGE1_FALLBACK/${DONOR}/stage1" >&2
             echo "Aborting -- no jobs launched." >&2; exit 1; }
         STAGE1_SRC["$ID"]="$S1"
+    fi
+
+    # O and P adopt stage 1 (they ARE A's and E's genomes) but must build their
+    # own stage 2: `neutral_keep_fraction` is in params_record.STAGE2_KEYS, so
+    # adopting A's would be refused by the provenance guard -- correctly, since
+    # A's stage 2 was built from the un-thinned variant set. They still rerun far
+    # less than K/L/M/N, which also pay for stage 1.
+    #
+    # K, L, M and N are the categories here that build the WHOLE pipeline. Every
+    # other one exists in the cmaf_0.001 source arm and this script's entire
+    # purpose is to reuse that stage 2 and rerun only stages 3-5 at the lower
+    # fine-mapping floor. K/L are new seed bands with a new effect model and
+    # M/N are new seed bands with a new demography, so there is no stage 2
+    # anywhere to adopt. Adopting A's or E's would silently give K/L selected
+    # causal loci -- the one thing those categories are defined by not having --
+    # and would give M/N phenotypes drawn from a EUR genome. (Q_scaling is in
+    # params_record.STAGE2_KEYS, so M/N would be refused rather than corrupted,
+    # but refused hours in rather than here.)
+    if [[ "${ID:0:1}" =~ ^(K|L|M|N|O|P)$ ]]; then
+        STAGE2_SRC["$ID"]=""
+
+        # L runs cattle stage 1 for real (E never does here -- it adopts stage 2,
+        # so its stage 1 is never built). That means L, alone in this script,
+        # needs the shared deep-history handoff. Without this the missing
+        # checkpoint surfaces only once the stage-1 job runs and fails.
+        if [[ "${ID:0:1}" == "L" ]]; then
+            CB_DIR=$(awk '/^cattle_baseline_search_dirs:/{f=1;next} f&&/^ *- /{gsub(/^ *- */,"");print;exit}' "$REPO/$CFG")
+            CB_SEED=$(awk '/^cattle_baseline_seed:/{print $2;exit}' "$REPO/$CFG")
+            L_VAL=$(awk '/^L:/{print $2;exit}' "$REPO/$CFG")
+            Q_VAL=$(awk '/^Q_scaling:/{print $2;exit}' "$REPO/$CFG")
+            CKPT="${CB_DIR}/farm_selection_Q_${Q_VAL}.L_${L_VAL}.seed_${CB_SEED}.ep7.ts"
+            [[ -f "$CKPT" ]] || {
+                echo "ERROR: missing shared cattle handoff checkpoint for ${ID}:" >&2
+                echo "       $CKPT" >&2; exit 1; }
+        fi
+
+        # Refuse to write over a finished stage 4 in the TARGET root.
+        if compgen -G "$OUT_SCRATCH/${ID}/stage4/*/*.enloc.sig.out" > /dev/null; then
+            echo "ERROR: $OUT_SCRATCH/${ID} already holds stage-4 output." >&2
+            echo "       Remove it deliberately or pick another root. Nothing launched." >&2
+            exit 1
+        fi
+        continue
     fi
 
     # stage2_search_dirs wants the directory CONTAINING gwas_*_gtex_*_maf_*/,
@@ -216,6 +381,39 @@ echo "  causal_min_maf=$CAUSAL_FLOOR (unchanged)  fm_min_maf=$FM_FLOOR  min_maf=
 echo "  stage 1 + stage 2 REUSED from $SRC_ROOT"
 echo "  target root: $OUT_SCRATCH"
 echo "  Only stages 3-5 will run; the trait draw is identical to the fm=0.01 arm."
+# ...except for the fresh-build categories, whose STAGE2_SRC is empty. Saying
+# "stage 2 REUSED" over a K/L/M/N run would be a plain lie in the one place
+# someone checks before launching a 12-hour job.
+# The trailing `:` is load-bearing under `set -e`. The loop's exit status is
+# its LAST iteration's, and `[[ ... ]] && printf` returns 1 whenever that
+# replicate does not match -- so `VAR=$(...)` inherits a non-zero status and
+# kills the script before the submit loop, silently, whenever the letter is
+# absent from REPS. That is exactly the common case for this line.
+FRESH=$(for r in $REPS; do [[ "${r:0:1}" =~ ^(K|L|M|N)$ ]] && printf ' %s' "$r"; done; :)
+if [[ -n "$FRESH" ]]; then
+    echo "  EXCEPT${FRESH}: no upstream to adopt (new seed band). Stages 1-5 ALL run."
+    echo "    M/N run Q_scaling 3, so stage 1 alone is ~12 h against A's ~1 h."
+fi
+# O and P are a THIRD case, and saying "stages 1-5 all run" over them would be
+# wrong in the one place someone checks before launching: they adopt their
+# parent's stage 1 (that is the pairing) and rebuild only stages 2-5.
+# The trailing `:` is load-bearing under `set -e`. The loop's exit status is
+# its LAST iteration's, and `[[ ... ]] && printf` returns 1 whenever that
+# replicate does not match -- so `VAR=$(...)` inherits a non-zero status and
+# kills the script before the submit loop, silently, whenever the letter is
+# absent from REPS. That is exactly the common case for this line.
+THINNED=$(for r in $REPS; do [[ "${r:0:1}" =~ ^(O|P)$ ]] && printf ' %s' "$r"; done; :)
+if [[ -n "$THINNED" ]]; then
+    echo "  EXCEPT${THINNED}: stage 1 ADOPTED from the parent category (O<i> <- A<i>,"
+    echo "    P<i> <- E<i>, at the parent's own seed); stages 2-5 rebuilt, because"
+    echo "    neutral_keep_fraction is a stage-2 key. Each is its parent's genome"
+    echo "    with neutral sites deleted, so the causal loci are identical."
+    for r in $THINNED; do
+        K=$(awk -F': *' '/^neutral_keep_fraction:/{print $2; exit}' "$REPO/$(config_of "$r")")
+        printf "      %-3s keeps %s of the selco == 0 sites (donor %s)\n" \
+            "$r" "$K" "$(stage1_donor_of "$r")"
+    done
+fi
 echo
 
 # ------------------------------------------------------------------- submit
@@ -229,7 +427,11 @@ for ID in $REPS; do
     # token becomes its own --config arg. No token may contain a space -- the
     # list literal below deliberately has none.
     EXTRA="causal_min_maf=${CAUSAL_FLOOR} fm_min_maf=${FM_FLOOR} min_maf=${GLM_FLOOR}"
-    EXTRA="${EXTRA} ld_ctrl=${LD_CTRL} stage2_search_dirs=['${STAGE2_SRC[$ID]}']"
+    EXTRA="${EXTRA} ld_ctrl=${LD_CTRL}"
+    # Empty for K/L, which build stage 2 themselves. `stage2_search_dirs=['']`
+    # would be a search dir that is the current directory, not an absent one.
+    [[ -n "${STAGE2_SRC[$ID]}" ]] && \
+        EXTRA="${EXTRA} stage2_search_dirs=['${STAGE2_SRC[$ID]}']"
     # Category tokens are NOT optional here. neutral_trait_vars is in
     # params_record.STAGE2_KEYS, so a B replicate that omitted it would be
     # refused by the stage-2 provenance guard rather than silently adopting the

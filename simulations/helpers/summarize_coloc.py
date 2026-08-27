@@ -154,7 +154,29 @@ DEMOGRAPHY = {"A": "human", "B": "human", "C": "human", "D": "human",
               # from the SAME distribution, so H-vs-I isolates the demography.
               # B is the other neutral model -- a genome shaped by selection, with
               # the effects moved onto neutral variants. Keep them apart.
-              "H": "human", "I": "cattle"}
+              # J is category A with the other branch of OutOfAfrica_2T12 sampled
+              # (population: AFR). Same species, same model, same selection --
+              # A vs J isolates ancestry, i.e. the LD and allele-frequency
+              # structure colocalization power actually depends on.
+              # K and L are the BACKGROUND SELECTION pair: A's and E's genomes
+              # (forward runs under the DFE, so the genealogy carries background
+              # selection) with H/I's effect model on top -- causal loci drawn
+              # from the strictly NEUTRAL variants, betas from the truncated DFE.
+              # K - H isolates the genealogy; A - K isolates the effect
+              # assignment. They are the only arms where those two are separable.
+              # M and N are the Wang-2014 Finnish founder pair -- a human
+              # demography that is not in stdpopsim's catalog at all. M samples
+              # the FIN deme, N the NFE one, and the two configs are otherwise
+              # identical, so M - N is the founder event alone and N - A is the
+              # model swap alone. Both run Q_scaling 3, not 10: the FIN deme is
+              # too small at Q=10 to yield 9,000 individuals.
+              "H": "human", "I": "cattle", "J": "human",
+              "K": "human", "L": "cattle",
+              "M": "human", "N": "human",
+              # O and P are A's and E's genomes with the neutral class thinned
+              # so pi halves -- same seeds, same causal loci, less background
+              # variation. A - O and E - P isolate variant density.
+              "O": "human", "P": "cattle"}
 
 COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
            "causal_min_maf", "n_gwas_traits", "n_causal_tested",
@@ -584,7 +606,11 @@ def _new_row():
 
 def collect(root):
     rows = {}
-    for rep in sorted(glob.glob(os.path.join(root, "[A-I][0-9]*"))):
+    # [A-Z], not [A-J]: the glob is the thing a new category is most likely to be
+    # missed by, and it fails by silently reporting nothing rather than erroring.
+    # A directory only matches if a digit follows the letter, so sibling dirs
+    # like OLD_r2_75/ and simulation_summaries/ are still excluded.
+    for rep in sorted(glob.glob(os.path.join(root, "[A-Z][0-9]*"))):
         cat_letter = os.path.basename(rep)[0]
         # EVERY stage-2 directory, not just the first. One workdir can legitimately
         # hold several -- a run that changed gwas/gtex scaling or the causal MAF

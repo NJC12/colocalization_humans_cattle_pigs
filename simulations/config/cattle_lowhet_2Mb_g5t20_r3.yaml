@@ -1,0 +1,133 @@
+# Cattle LOW-HETEROZYGOSITY replicate, 2 Mb region -- G5T20 cell. CATEGORY P.
+# ROUND 3.
+#
+# P is to E exactly what O is to A: half the nucleotide diversity, nothing else
+# changed. Read the two together -- (A - O) and (E - P) are the same contrast in
+# the two species, which is the point, since the human/cattle colocalization gap
+# is partly a gap in variant density (E carries ~1,365 segregating sites at 2 Mb
+# against A's ~36,000).
+#
+# HOW, and where the cattle case differs from the human one. Stage 2 deletes a
+# seeded random fraction of the selco == 0 sites (`neutral_keep_fraction`,
+# helpers/neutral_thinning.py). On the cattle branch the neutral class is laid
+# down IN STAGE 2 by add_neutral (8.4e-9, in two passes across the Q handoff),
+# not in stage 1 as it is for human -- but the thinning happens after that
+# overlay and after remove_fixed, so a single code path serves both species and
+# the Poisson-thinning argument is identical: this has exactly the distribution
+# of the same overlay run at `neutral_keep_fraction * 8.4e-9`.
+#
+# THE SEEDS ARE E'S, DELIBERATELY. P{N} runs at seed 5{N} and adopts E{N}'s
+# farm_selection_from_ep8.Q_0.01.L_2000000.cb_20250303.seed_5{N}.full.ts, so P1's
+# variant set is a strict SUBSET of E1's. paths.stage1_cattle_baseline_from_
+# midpoint_full builds that name from Q_scaling / L / cattle_baseline_seed /
+# stage1_seed and NOT from basename, which is why the new basename below does not
+# break the adoption. helpers/tests/test_lowhet_categories.py asserts the shared
+# seed. P must never run its own stage 1.
+#
+# handoff_ticks / deep_Q_scaling are RETAINED for the same reason E retains them:
+# the adopted tree sequence still has the split-Q piecewise time scale, so stage
+# 2's neutral overlay and time conversion are still applied in two segments. The
+# thinning is applied to the result of that overlay, not in place of it.
+#
+# THE KEEP FRACTION IS MEASURED, NOT CHOSEN, and it is NOT the same number as O's
+# -- cattle's selected sites carry a different share of its pi. See
+# helpers/measure_pi_components.py and the composition caveat in
+# config/human_lowhet_2Mb_g5t20_r3.yaml, which applies here too.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, stage1_search_dirs,
+# workdir, publishdir on the command line (P{N} -> seed 5{N}: P1=51 ... P5=55).
+
+pipeline: cattle_baseline_from_midpoint
+species: cattle
+basename: cattle_lowhet
+species_prefix: c
+
+# ---- Demography parameters ----
+Q_scaling: 0.01
+# Round-2 value: what the three farm_*.slim scripts hard-coded. NOTE that the
+# msprime stage (farm_create_orig_pop_e2.py) ran at 1.3e-8 in these runs, so the
+# deep genealogy and the forward phase disagreed -- that inconsistency is the
+# reason this key exists. Round-3 configs use 1.3e-8 everywhere.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t20 cell (x35 run uses 35)
+gtex_scaling: 20       # g5t20 cell (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+
+# ---- Category P: the one key that differs from E ----
+# Fraction of selco == 0 sites kept. MEASURED, not chosen -- see the header.
+# In params_record.STAGE2_KEYS and in paths.stage2_run_tag (as `.nkeep_<tok>`),
+# so this arm can neither adopt E's stage 2 nor be written on top of it.
+# MEASURED 2026-08-27 over E1-E5 (job 51523508, helpers/pi_components_lowhet.tsv):
+# the selected class carries a mean 0.2948 of E's pi, so
+#   k = 0.5 * (1 - 0.2948/0.7052) = 0.291
+# Per-replicate k spans 0.2777-0.3056 (sd 0.0102); at the pinned 0.291 the
+# EXPECTED pi ratio lands between 0.4895 and 0.5092 across E1-E5. That is an
+# expectation: the deletion is a random subset, so the realized ratio
+# scatters around it (the pilot measured 0.508). Read thin_pi_ratio in
+# each replicate's stage2_params.txt for what actually happened.
+# NOT the same number as O's 0.306, and it must not be made the same: cattle's
+# selected sites carry a different share of its pi, so a shared constant would
+# halve pi in one species and not the other.
+neutral_keep_fraction: 0.291
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds ----
+# cattle_baseline_seed identifies the shared 2 Mb baseline whose epoch_8.ts we
+# load; it is the same for all 8 replicates. stage1_seed is THIS replicate's
+# continuation seed (overridden per replicate on the command line).
+cattle_baseline_seed: 20250303
+stage1_seed: 51
+stage2_seed: 51
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Point at the shared 2 Mb baseline's stage1 dir (where its epoch_8.ts lives).
+cattle_baseline_search_dirs: 
+  - /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline/stage1
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the
+# round-3 x35 stage1 dir so stage 1 is reused, not rerun). Leave empty here.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- SLiM binary ----
+slim_binary: /home/njc12/bin/slim_5/slim_wrapper.sh
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+dapg_window: 250000
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/cattle_lowhet
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/cattle_lowhet
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default
+# Split-Q handoff: epochs 8-12 = 600+600+600+300+300 = 2400 ticks at
+# Q_scaling=0.01; everything older ran at Q=1.
+handoff_ticks: 2400
+deep_Q_scaling: 1

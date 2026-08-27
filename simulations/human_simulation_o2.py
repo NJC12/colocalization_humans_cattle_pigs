@@ -3,13 +3,18 @@
 # module load java/jdk-11.0.11
 
 import stdpopsim
+import demes
 import numpy as np
 import msprime
 import tstrait
 import tskit
 # import hail as hl
 import os
+import sys
 import argparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from helpers import human_demography  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, required=True, help='Random seed')
@@ -17,7 +22,27 @@ parser.add_argument('--gwas_h2', type=float, required=True, help='Per-SNP herita
 parser.add_argument('--gtex_h2', type=float, required=True, help='Per-SNP heritability of the GTEx trait')
 parser.add_argument('--length', type=float, required=True, help='Length (in basepairs) of the region to simulate')
 parser.add_argument('--Q', type=int, required=True, help='SLiM scaling factor (e.g. 10 for ~9k indiv runs, 1 for ~150k indiv runs)')
-parser.add_argument('--n_samples', type=int, required=True, help='Number of EUR individuals to simulate; should equal GWAS_size + largest GTEx_size for the downstream simulation')
+parser.add_argument('--n_samples', type=int, required=True, help='Number of individuals to sample from --population; should equal GWAS_size + largest GTEx_size for the downstream simulation')
+parser.add_argument('--demographic_model', type=str, required=False,
+                    default=human_demography.DEFAULT_MODEL,
+                    choices=list(human_demography.MODELS),
+                    help='Which human demographic model to run (config key '
+                         '`demographic_model`). OutOfAfrica_2T12 is stdpopsim\'s '
+                         'catalog model, which categories A/B/C/D/J/K run; '
+                         'FinnishWang2014 is the demes graph in demography/, '
+                         'which categories M (FIN) and N (NFE) run. See '
+                         'helpers/human_demography.MODELS.')
+# No `choices=` here: the valid populations depend on --demographic_model, so
+# this is checked after parsing instead. argparse would otherwise pin the list
+# to the DEFAULT model's populations and reject FIN outright.
+parser.add_argument('--population', type=str, required=False, default=None,
+                    help='Which population of the demographic model to sample '
+                         '(config key `population`). Every population is '
+                         'simulated forward either way -- this only chooses '
+                         'whose individuals are retained. Defaults to the '
+                         "model's own default: EUR for OutOfAfrica_2T12 "
+                         '(categories A/B/C/D; AFR is category J), FIN for '
+                         'FinnishWang2014 (category M; NFE is category N).')
 parser.add_argument('--tmp_dir', type=str, required=False, default='/n/scratch/users/n/njc12/sims/tmp',
                     help='Directory for SLiM/intermediate .ts/.vcf files')
 parser.add_argument('--recomb_rate', type=float, required=True,
@@ -35,12 +60,25 @@ L = args.length
 Q = args.Q
 n_samples = args.n_samples
 recomb_rate = args.recomb_rate
+model_id = human_demography.validate_model(args.demographic_model)
+model_spec = human_demography.MODELS[model_id]
+population = human_demography.validate_population(
+    args.population or human_demography.default_population(model_id), model_id)
+# The tree sequence carries the model and the population in its name for
+# anything but EUR-under-the-default-model. Stage-1 adoption matches on filename
+# plus seed, and for human names the seed half never fires -- an AFR or a
+# Finnish run is otherwise indistinguishable from an A run at the filesystem
+# level: same script, same pipeline, same species.
+ts_name = human_demography.stage1_ts_name(population, seed, model_id)
 print(f'Using seed: {seed}')
 print(f'GWAS h2: {gwas_h2}')
 print(f'GTEx h2: {gtex_h2}')
 print(f'Q: {Q}')
 print(f'n_samples: {n_samples}')
+print(f'demographic model: {model_id} ({model_spec["kind"]})')
+print(f'population: {population}')
 print(f'recombination rate: {recomb_rate}')
+print(f'output: {ts_name}')
 
 temp_dir = args.tmp_dir.rstrip('/')
 os.makedirs(temp_dir, exist_ok=True)
@@ -48,13 +86,35 @@ os.makedirs(temp_dir, exist_ok=True)
 
 ##### Running slim ####
 # Gate on the only output anything downstream consumes. rules/stage1_human.smk
-# copies hts_{seed}.ts and nothing else; stage 2 re-does the GWAS/GTEx split
+# copies that one .ts and nothing else; stage 2 re-does the GWAS/GTEx split
 # from it. This used to gate on the per-sample VCFs written at the end of this
 # block, which are no longer produced.
-if not os.path.exists(f'{temp_dir}/hts_{seed}.ts'):
+if not os.path.exists(f'{temp_dir}/{ts_name}'):
     print('Running slim')
-    species = stdpopsim.get_species("HomSap")
-    model = species.get_demographic_model("OutOfAfrica_2T12")
+    species = stdpopsim.get_species(human_demography.SPECIES)
+    if model_spec["kind"] == "catalog":
+        model = species.get_demographic_model(model_spec["catalog_id"])
+    else:
+        # A demes graph shipped with the repo. stdpopsim has no catalog entry
+        # for it, so wrap it the way stdpopsim wraps its own: a DemographicModel
+        # whose .model is an msprime.Demography. `populations=` must be left
+        # None when `model=` is given (stdpopsim asserts it) and every
+        # population is then sample-allowed, which is what we want.
+        graph = demes.load(human_demography.demes_path(model_id))
+        print(f'Loaded demes graph from {human_demography.demes_path(model_id)}: '
+              f'{[d.name for d in graph.demes]}')
+        model = stdpopsim.DemographicModel(
+            id=model_id,
+            description=model_spec["description"],
+            long_description=model_spec["long_description"],
+            generation_time=model_spec["generation_time"],
+            model=msprime.Demography.from_demes(graph),
+        )
+    print('Deme sizes at sampling (Q-rescaled, must be >= n_samples for the '
+          'sampled one):')
+    for p in model.model.populations:
+        print(f'  {p.name}: {p.initial_size:,.0f} real -> '
+              f'{p.initial_size / Q:,.0f} at Q={Q}')
     engine = stdpopsim.get_engine("slim")
 
     # contig = species.get_contig("chr22", left=1e7, right=1.1e7)
@@ -65,7 +125,10 @@ if not os.path.exists(f'{temp_dir}/hts_{seed}.ts'):
     # difference between the arms.
     contig = species.get_contig(length=L, recombination_rate=recomb_rate)
     contig.mutation_rate = 5.6e-9  # unscaled; stdpopsim's slim_scaling_factor multiplies by Q
-    samples = {"AFR": 0, "EUR": n_samples}
+    # Every population of the model is simulated forward whichever one is
+    # sampled, so the AFR arm (category J) costs exactly what the EUR arm costs
+    # -- only the retained individuals differ. The same holds for M vs N.
+    samples = human_demography.sample_dict(population, n_samples, model_id)
 
     mt1 = stdpopsim.MutationType(
         dominance_coeff=0.5,
@@ -140,7 +203,7 @@ if not os.path.exists(f'{temp_dir}/hts_{seed}.ts'):
     hts = msprime.sim_mutations(ts, rate=8.4e-9, model=mut_model, keep=True, discrete_genome=True, random_seed=seed)
     hts = remove_fixed(hts)
 
-    hts.dump(f'{temp_dir}/hts_{seed}.ts')
+    hts.dump(f'{temp_dir}/{ts_name}')
     print(f'hts has {hts.num_sites} sites and {hts.num_mutations} mutations')
 else:
-    print(f'{temp_dir}/hts_{seed}.ts already exists; skipping SLiM')
+    print(f'{temp_dir}/{ts_name} already exists; skipping SLiM')

@@ -3,6 +3,12 @@
 #
 #   causal_sampling  power    causal loci drawn with inclusion probability
 #                             proportional to the power to detect them at n=8000
+#   PLATEAU          1        weight = power. Set PLATEAU=0.5 for SATURATING
+#                             power sampling: weight = min(power, 0.5), so once a
+#                             variant is effectively certain to be found, being
+#                             found more surely stops increasing its chance of
+#                             being drawn. Changes the root name, so a saturated
+#                             arm never lands on top of its unsaturated twin.
 #   sampling_gwas_n  8000     the GWAS size that power is computed for
 #   sampling_sig_p   5e-8     what "detected" means (= GWAS_SIG_P in figure 2)
 #   gwas_scaling     20       from config/*_2Mb_x20_r3.yaml
@@ -112,6 +118,19 @@
 # multipliers -- at x10 the human pool clears the 100-variant floor with about 13%
 # to spare, so a lower cell than x10 should be expected to refuse.
 #
+#
+# CATEGORIES O AND P (low heterozygosity). O is A's genome and P is E's, with a
+# measured fraction of the NEUTRAL (selco == 0) sites deleted in stage 2, sized so
+# pi halves (`neutral_keep_fraction`, helpers/neutral_thinning.py). They are the
+# ONLY categories that share another category's seed band -- O{N} runs at A's seed
+# 1{N} and P{N} at E's 5{N} -- because they ADOPT their parent's stage-1 tree
+# sequence rather than simulating a new one. That is the point: O_i's variant set
+# is a strict subset of A_i's, the 50 central causal loci are the same 50
+# positions, and A - O isolates variant density with no replicate noise in it.
+# stage1_donor_of() below is what redirects the stage-1 lookup. They must always
+# rebuild stage 2 (neutral_keep_fraction is in params_record.STAGE2_KEYS), and
+# they must never be launched from submit_2Mb_r3_cmaf_replicates.sh, which builds
+# stage 1. See "Categories O and P" in README_snakemake.md.
 # Run from a login node:
 #   bash submit_2Mb_r3_x20_psamp_fm001.sh
 #   DRY=1 bash submit_2Mb_r3_x20_psamp_fm001.sh          # print, submit nothing
@@ -128,6 +147,22 @@ cd "$REPO"
 
 CELL="${CELL:-x20}"
 SAMPLING_N="${SAMPLING_N:-8000}"
+# SATURATING POWER SAMPLING. 1 = off (the historical weight, exactly proportional
+# to power). At 0.5 every variant with power >= 0.5 carries the same weight, so
+# once detection is effectively assured, relative power stops deciding which loci
+# become causal. The value is passed straight through to
+# sampling_power_plateau; helpers/paths.py turns it into the ".psamp_N_sat05"
+# path segment, and SAT_SUFFIX below keeps the root name telling the same story.
+PLATEAU="${PLATEAU:-1}"
+# HOW MANY TRAIT LOCI. 50/50 is every arm through round 3: 50 causal loci in the
+# central 1 Mb (the GWAS traits, and the same 50 shared with GTEx) plus 50
+# GTEx-only loci drawn from the 500 kb flanks. Halving both gives an arm with
+# half the loci per replicate. The count appears in NO filename -- stage-2 outputs
+# are named gwas_G_gtex_T_maf_M only -- so it goes in the root name here and in
+# helpers/paths.trait_count_segment, or two arms would collide file-for-file in
+# the flat archive.
+N_CENTRAL="${N_CENTRAL:-50}"
+N_FLANK="${N_FLANK:-50}"
 SIG_P="${SIG_P:-5e-8}"
 MIN_POWER="${MIN_POWER:-0.05}"
 MIN_POOL_MULTIPLE="${MIN_POOL_MULTIPLE:-2}"
@@ -139,8 +174,17 @@ REPS="${REPS:-A1 A2 A3 A4 A5 E1 E2 E3 E4 E5}"
 DRY="${DRY:-}"
 BEGIN="${BEGIN:-}"
 
-OUT_SCRATCH="$SCRATCH/simulations_round_3_2Mb_${CELL}_psamp_${SAMPLING_N}_fm_${FM_FLOOR}"
-OUT_PUBLISH="$PUBLISH/simulations_round_3_2Mb_${CELL}_psamp_${SAMPLING_N}_fm_${FM_FLOOR}"
+# A saturated run and its unsaturated twin differ in WHICH loci become causal, so
+# they get different roots. At PLATEAU=1 the suffix is empty and the root is
+# byte-identical to what this script has always produced.
+if [[ "$PLATEAU" == "1" || "$PLATEAU" == "1.0" ]]; then
+    SAT_SUFFIX=""
+else
+    SAT_SUFFIX="_sat_${PLATEAU}"
+fi
+if [[ "$N_CENTRAL" == "50" ]]; then NTR_SUFFIX=""; else NTR_SUFFIX="_ntr_${N_CENTRAL}"; fi
+OUT_SCRATCH="$SCRATCH/simulations_round_3_2Mb_${CELL}_psamp_${SAMPLING_N}${SAT_SUFFIX}${NTR_SUFFIX}_fm_${FM_FLOOR}"
+OUT_PUBLISH="$PUBLISH/simulations_round_3_2Mb_${CELL}_psamp_${SAMPLING_N}${SAT_SUFFIX}${NTR_SUFFIX}_fm_${FM_FLOOR}"
 
 # Stage 1 is the GENETIC simulation. It does not depend on the phenotype
 # multipliers or on how the causal variants are drawn, so a replicate has exactly
@@ -158,6 +202,11 @@ STAGE1_ROOTS=(
 #   E{N} -> 5{N}   cattle baseline from midpoint
 #   F{N} -> 6{N}   cattle + positive selection, WITH continued bottlenecking
 #   G{N} -> 7{N}   cattle + positive selection, WITHOUT it
+#   J{N} -> 10{N}  human, AFRICAN ancestry (A's config + population: AFR)
+#   M{N} -> 13{N}  human, FINNISH founder demography (Wang 2014, FIN deme)
+#   N{N} -> 14{N}  human, NON-FINNISH European (same model, NFE deme)
+# The rule is seed = 10*letter_index + replicate (A=1 ... I=9, J=10), which
+# stops reading off as a tens digit at J but keeps every band disjoint.
 seed_of() {
     local n="${1:1}"
     case "${1:0:1}" in
@@ -167,7 +216,33 @@ seed_of() {
         F) echo "6${n}" ;;
         G) echo "7${n}" ;;
         H) echo "8${n}" ;; I) echo "9${n}" ;;
+        J) echo "10${n}" ;;
+        M) echo "13${n}" ;; N) echo "14${n}" ;;
+        # O and P SHARE A's and E's seed bands, and that is not an oversight.
+        # Every other category has a private band because it is a different
+        # genetic simulation; O and P are the SAME simulation with a fraction of
+        # the neutral sites deleted in stage 2, so O{N} adopts A{N}'s tree
+        # sequence and P{N} adopts E{N}'s, at those seeds, and O1's variant set
+        # is a strict subset of A1's. That pairing is why A - O carries no
+        # replicate noise. Consequence: O and P must never run their own stage 1
+        # (see stage1_donor_of below), and they must never adopt A's or E's
+        # stage 2 (neutral_keep_fraction is in params_record.STAGE2_KEYS, which
+        # makes that a loud refusal rather than a silent wrong answer).
+        O) echo "1${n}" ;; P) echo "5${n}" ;;
         *) echo "ERROR: no seed convention for '$1'" >&2; return 1 ;;
+    esac
+}
+
+# Which replicate's stage-1 tree sequence a run adopts. The identity for every
+# category except O and P, which reuse A's and E's rather than simulating their
+# own -- the pairing described in seed_of(). Their seeds already match, so the
+# seed-strict lookup succeeds; only the DIRECTORY has to be redirected, because
+# it is named for the replicate rather than for the seed.
+stage1_donor_of() {
+    case "${1:0:1}" in
+        O) echo "A${1:1}" ;;
+        P) echo "E${1:1}" ;;
+        *) echo "$1" ;;
     esac
 }
 
@@ -181,14 +256,36 @@ seed_of() {
 # model. I is the cattle counterpart of H: same drawn-DFE effect sizes, cattle
 # demography, and unlike E/F/G it simulates all twelve epochs itself rather than
 # resuming from the shared ep7 checkpoint.
+#
+# J is category A with `population: AFR` -- the same OutOfAfrica_2T12 run, the
+# other branch sampled. It gets its own file rather than a --config override
+# (which is how B is done) because it also needs its own basename and seed band,
+# and because one file per genetic model is the rule everywhere else here.
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
+#
+# M and N are the FINNISH FOUNDER PAIR, and unlike B/K/L they need real config
+# files: `demographic_model: FinnishWang2014` selects a demes graph that is not
+# in stdpopsim's catalog, and it forces `Q_scaling: 3` because stdpopsim's SLiM
+# engine will not sample 9,000 individuals out of a FIN deme that holds 2,266 at
+# Q=10 or 7,491 at Q=4. At Q=3 it holds 9,988 -- a margin of 988. M samples FIN, N samples NFE, and the two files are otherwise identical:
+#   M - N  isolates the Finnish founder event
+#   N - A  isolates the model swap (Wang NFE vs Tennessen EUR)
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
 config_of() {
     case "${1:0:1}" in
         A|B) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        J)   echo "config/human_afr_2Mb_${CELL}_r3.yaml" ;;
+        M)   echo "config/human_fin_2Mb_${CELL}_r3.yaml" ;;
+        N)   echo "config/human_nfe_2Mb_${CELL}_r3.yaml" ;;
         H)   echo "config/human_neutral_2Mb_${CELL}_r3.yaml" ;;
         I)   echo "config/cattle_neutral_2Mb_${CELL}_r3.yaml" ;;
         E)   echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
         F)   echo "config/cattle_sel_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
         G)   echo "config/cattle_sel_not_bottlenecked_2Mb_${CELL}_r3.yaml" ;;
+        O)   echo "config/human_lowhet_2Mb_${CELL}_r3.yaml" ;;
+        P)   echo "config/cattle_lowhet_2Mb_${CELL}_r3.yaml" ;;
         *)   return 1 ;;
     esac
 }
@@ -215,7 +312,9 @@ for MARKER in 'causal_sampling:Snakefile' 'causal_sampling:helpers/paths.py' \
               'synthetic_flag:rules/common.smk' \
               'DEFAULT_CAUSAL_MIN_MAF:helpers/paths.py' \
               'cattle_neutral:Snakefile' \
-              'stage1_cattle_neutral_ts:helpers/paths.py'; do
+              'stage1_cattle_neutral_ts:helpers/paths.py' \
+              'neutral_keep_fraction:helpers/paths.py' \
+              'thin_flag:rules/common.smk'; do
     PAT="${MARKER%%:*}"; FILE="${MARKER#*:}"
     grep -q "$PAT" "$REPO/$FILE" 2>/dev/null || {
         echo "ERROR: $REPO/$FILE predates the causal_sampling patch (no '$PAT')." >&2
@@ -251,21 +350,36 @@ for ID in $REPS; do
         echo "ERROR: $CFG sets no n_central_traits, which causal_sampling=power requires." >&2
         echo "       Nothing launched." >&2; exit 1; }
 
+    # O and P with no neutral_keep_fraction would be byte-identical copies of A
+    # and E under a different name. The key is only meaningful once
+    # helpers/measure_pi_components.py has measured it, so refuse until it is set.
+    if [[ "${ID:0:1}" =~ ^(O|P)$ ]]; then
+        grep -qE '^neutral_keep_fraction:[[:space:]]*[0-9.]+' "$REPO/$CFG" || {
+            echo "ERROR: $CFG does not set neutral_keep_fraction, so ${ID} would" >&2
+            echo "       reproduce its parent category exactly. Measure it with" >&2
+            echo "       helpers/measure_pi_components.py and pin it. Nothing launched." >&2
+            exit 1; }
+    fi
+
     # Categories H and I build their own stage 1 rather than reusing one. They are
     # distinct pipelines (human_neutral / cattle_neutral, pure coalescents --
-    # seconds to minutes, not hours), so there is no x35 predecessor to point at
-    # and nothing to save by looking. An empty STAGE1_SRC tells the controller to
-    # omit stage1_search_dirs entirely.
-    if [[ "${ID:0:1}" =~ ^(H|I)$ ]]; then
+    # seconds to minutes, not hours), so there is no x35 predecessor to point at.
+    # J runs the SAME pipeline as A but samples the AFR branch, so its tree
+    # sequence is hts_AFR_{seed}.ts and no EUR stage1 dir can satisfy it --
+    # pointing at one would find nothing, and find nothing silently.
+    # An empty STAGE1_SRC tells the controller to omit stage1_search_dirs
+    # entirely.
+    if [[ "${ID:0:1}" =~ ^(H|I|J|M|N)$ ]]; then
         STAGE1_SRC["$ID"]=""
     else
         S1=""
+        DONOR=$(stage1_donor_of "$ID")   # itself, except O->A and P->E
         for ROOT in "${STAGE1_ROOTS[@]}"; do
-            if compgen -G "$ROOT/${ID}/stage1/*.ts" > /dev/null; then S1="$ROOT/${ID}/stage1"; break; fi
+            if compgen -G "$ROOT/${DONOR}/stage1/*.ts" > /dev/null; then S1="$ROOT/${DONOR}/stage1"; break; fi
         done
         [[ -n "$S1" ]] || {
-            echo "ERROR: no stage-1 tree sequence for ${ID} in any of:" >&2
-            for ROOT in "${STAGE1_ROOTS[@]}"; do echo "       $ROOT/${ID}/stage1" >&2; done
+            echo "ERROR: no stage-1 tree sequence for ${ID} (donor ${DONOR}) in any of:" >&2
+            for ROOT in "${STAGE1_ROOTS[@]}"; do echo "       $ROOT/${DONOR}/stage1" >&2; done
             echo "Aborting -- no jobs launched." >&2; exit 1; }
         STAGE1_SRC["$ID"]="$S1"
     fi
@@ -279,11 +393,37 @@ for ID in $REPS; do
     fi
 done
 
+# The trailing `:` is load-bearing under `set -e`. The loop's exit status is
+# its LAST iteration's, and `[[ ... ]] && printf` returns 1 whenever that
+# replicate does not match -- so `VAR=$(...)` inherits a non-zero status and
+# kills the script before the submit loop, silently, whenever the letter is
+# absent from REPS. That is exactly the common case for this line.
+THINNED=$(for r in $REPS; do [[ "${r:0:1}" =~ ^(O|P)$ ]] && printf ' %s' "$r"; done; :)
+if [[ -n "$THINNED" ]]; then
+    echo "Low-heterozygosity categories in this launch:${THINNED}"
+    for r in $THINNED; do
+        K=$(awk -F': *' '/^neutral_keep_fraction:/{print $2; exit}' "$REPO/$(config_of "$r")")
+        printf "  %-3s stage 1 adopted from %s; keeps %s of the selco == 0 sites\n" \
+            "$r" "$(stage1_donor_of "$r")" "$K"
+    done
+    echo "  The causal draw is UNAFFECTED: power weights are built from selco != 0"
+    echo "  variants, which thinning never touches, so the drawn loci match the parent."
+fi
 echo "Pre-flight OK: $(echo $REPS | wc -w) replicates."
 echo "  causal_sampling=power  sampling_gwas_n=$SAMPLING_N  sig_p=$SIG_P"
 echo "  min_power=$MIN_POWER  min_pool_multiple=$MIN_POOL_MULTIPLE"
-echo "  cell=$CELL (gwas_scaling=gtex_scaling=20)  ld_ctrl=$LD_CTRL"
+CFG_PROBE=$(config_of "${REPS%% *}")
+GW_S=$(awk '/^gwas_scaling:/{print $2; exit}' "$REPO/$CFG_PROBE")
+GT_S=$(awk '/^gtex_scaling:/{print $2; exit}' "$REPO/$CFG_PROBE")
+echo "  cell=$CELL (gwas_scaling=$GW_S  gtex_scaling=$GT_S)  ld_ctrl=$LD_CTRL"
+if [[ "$PLATEAU" == "1" || "$PLATEAU" == "1.0" ]]; then
+    echo "  weight = power (no plateau)"
+else
+    echo "  weight = min(power, $PLATEAU)  SATURATING -- past $PLATEAU, extra power buys no extra representation"
+fi
 echo "  fm_min_maf=$FM_FLOOR  min_maf=$GLM_FLOOR  causal_min_maf=$CAUSAL_FLOOR (central pool AND flanks)"
+echo "  trait loci: $N_CENTRAL central (GWAS + shared GTEx) + $N_FLANK GTEx-only flank"
+echo "  pool guard needs $((MIN_POOL_MULTIPLE * N_CENTRAL)) variants at power >= $MIN_POWER"
 echo "  target root: $OUT_SCRATCH"
 echo "  stage 1 REUSED; stage 2 RUNS for every replicate."
 echo
@@ -301,6 +441,8 @@ for ID in $REPS; do
     # records what was INTENDED rather than whatever the config held on the day.
     EXTRA="causal_sampling=power sampling_gwas_n=${SAMPLING_N} sampling_sig_p=${SIG_P}"
     EXTRA="$EXTRA sampling_min_power=${MIN_POWER} sampling_min_pool_multiple=${MIN_POOL_MULTIPLE}"
+    EXTRA="$EXTRA sampling_power_plateau=${PLATEAU}"
+    EXTRA="$EXTRA n_central_traits=${N_CENTRAL} n_flank_gtex_traits=${N_FLANK}"
     EXTRA="$EXTRA causal_min_maf=${CAUSAL_FLOOR} fm_min_maf=${FM_FLOOR} min_maf=${GLM_FLOOR}"
     EXTRA="$EXTRA ld_ctrl=${LD_CTRL}"
     CAT_EXTRA=$(category_extra "$ID")
@@ -326,7 +468,7 @@ echo "Watch with: squeue -u \$USER -o '%.10i %.24j %.9P %.2t %.10M %R'"
 echo
 FIRST_REP=$(echo $REPS | awk '{print $1}')
 echo "CHECK FIRST, before anything downstream is believed -- how many GWAS causal"
-echo "loci actually have a GTEx partner. Anything short of 50 means the scorers are"
+echo "loci actually have a GTEx partner. Anything short of $N_CENTRAL means the scorers are"
 echo "counting structural gaps as colocalization failures:"
 echo "  grep -E 'GTEx partner|power:' $OUT_SCRATCH/*/logs/stage2_split_pheno.log"
 echo
@@ -335,8 +477,8 @@ echo "far above the pool median:"
 echo "  grep 'power:' $OUT_SCRATCH/*/logs/stage2_split_pheno.log"
 echo
 echo "The per-variant draw is auditable in (h* for A/B, c* for E/F/G):"
-echo "  $OUT_SCRATCH/${FIRST_REP}/stage2/*.psamp_${SAMPLING_N}/*/[hc]gwas_causal_power_*.tsv"
-echo "  $OUT_SCRATCH/${FIRST_REP}/stage2/*.psamp_${SAMPLING_N}/*/[hc]gwas_trait_partners_*.tsv"
+echo "  $OUT_SCRATCH/${FIRST_REP}/stage2/*.psamp_${SAMPLING_N}*/*/[hc]gwas_causal_power_*.tsv"
+echo "  $OUT_SCRATCH/${FIRST_REP}/stage2/*.psamp_${SAMPLING_N}*/*/[hc]gwas_trait_partners_*.tsv"
 if [[ " $REPS " == *" B"* ]]; then
     echo
     echo "*** B IS IN THIS BATCH AND HAS NEVER COMPLETED UNDER POWER SAMPLING. ***"

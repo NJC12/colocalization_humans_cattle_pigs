@@ -120,7 +120,15 @@ rule stage2_split_pheno:
             f" --sampling_gwas_n {config['sampling_gwas_n']}"
             f" --sampling_sig_p {config['sampling_sig_p']}"
             f" --sampling_min_power {config['sampling_min_power']}"
+            f" --sampling_power_plateau {config['sampling_power_plateau']}"
             f" --sampling_min_pool_multiple {config['sampling_min_pool_multiple']}"
+        ),
+        # Neutral-class thinning (categories O and P). Emits nothing at the
+        # default 1.0, so the shell command for every pre-existing run is
+        # byte-identical -- the same rule sampling_flag follows.
+        thin_flag          = (
+            "" if float(config["neutral_keep_fraction"]) == paths.NO_NEUTRAL_THINNING
+            else f"--neutral_keep_fraction {config['neutral_keep_fraction']}"
         ),
         out_dir            = paths.stage2_dir(config),
         marker             = paths.stage2_marker(config),
@@ -170,6 +178,7 @@ rule stage2_split_pheno:
             --n_flank_gtex_traits {params.n_flank_gtex} \
             {params.n_samples_flag} \
             {params.sampling_flag} \
+            {params.thin_flag} \
             > {log} 2>&1
         touch "{params.marker}"
         """

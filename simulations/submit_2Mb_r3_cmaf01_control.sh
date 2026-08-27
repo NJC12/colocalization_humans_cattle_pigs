@@ -72,20 +72,37 @@ STAGE1_ROOTS=(
     "$SCRATCH/simulations_round_3_2Mb"                    # A1, E1 (x35 pilot)
 )
 
-# Seed convention from the configs' own headers: A{N} -> 1{N}, E{N} -> 5{N}.
+# Seed convention from the configs' own headers: seed = 10*letter_index +
+# replicate, so A{N} -> 1{N}, E{N} -> 5{N}, J (the tenth letter) -> 10{N},
+# M (the thirteenth) -> 13{N} and N (the fourteenth) -> 14{N}.
 seed_of() {
     local n="${1:1}"
     case "${1:0:1}" in
         A) echo "1${n}" ;;
         E) echo "5${n}" ;;
         H) echo "8${n}" ;; I) echo "9${n}" ;;
+        J) echo "10${n}" ;;
+        M) echo "13${n}" ;; N) echo "14${n}" ;;
         *) echo "ERROR: no seed convention for '$1'" >&2; return 1 ;;
     esac
 }
 
+#
+# M and N are the FINNISH FOUNDER PAIR, and unlike B/K/L they need real config
+# files: `demographic_model: FinnishWang2014` selects a demes graph that is not
+# in stdpopsim's catalog, and it forces `Q_scaling: 3` because stdpopsim's SLiM
+# engine will not sample 9,000 individuals out of a FIN deme that holds 2,266 at
+# Q=10 or 7,491 at Q=4. At Q=3 it holds 9,988 -- a margin of 988. M samples FIN, N samples NFE, and the two files are otherwise identical:
+#   M - N  isolates the Finnish founder event
+#   N - A  isolates the model swap (Wang NFE vs Tennessen EUR)
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
 config_of() {
     case "${1:0:1}" in
         A) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        J) echo "config/human_afr_2Mb_${CELL}_r3.yaml" ;;
+        M) echo "config/human_fin_2Mb_${CELL}_r3.yaml" ;;
+        N) echo "config/human_nfe_2Mb_${CELL}_r3.yaml" ;;
         H) echo "config/human_neutral_2Mb_${CELL}_r3.yaml" ;;
         I) echo "config/cattle_neutral_2Mb_${CELL}_r3.yaml" ;;
         E) echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;
@@ -105,12 +122,15 @@ for ID in $REPS; do
     [[ -f "$REPO/$CFG" ]] || { echo "ERROR: missing config: $REPO/$CFG" >&2; exit 1; }
     seed_of "$ID" > /dev/null || exit 1
 
-    # Categories H and I build their own stage 1 rather than reusing one. They are
-    # distinct pipelines (human_neutral / cattle_neutral, pure coalescents --
-    # seconds to minutes, not hours), so there
-    # is no x35 predecessor to point at and nothing to save by looking. An empty
-    # STAGE1_SRC tells the controller to omit stage1_search_dirs entirely.
-    if [[ "${ID:0:1}" =~ ^(H|I)$ ]]; then
+    # Categories H, I and J build their own stage 1 rather than reusing one.
+    # H and I are distinct pipelines (human_neutral / cattle_neutral, pure
+    # coalescents -- seconds to minutes, not hours), so there is no x35
+    # predecessor to point at. J runs the SAME pipeline as A but samples the AFR
+    # branch, so its tree sequence is hts_AFR_{seed}.ts and no EUR stage1 dir can
+    # satisfy it -- pointing at one would find nothing, and find nothing
+    # silently. An empty STAGE1_SRC tells the controller to omit
+    # stage1_search_dirs entirely.
+    if [[ "${ID:0:1}" =~ ^(H|I|J|M|N)$ ]]; then
         STAGE1_SRC["$ID"]=""
     else
         S1=""

@@ -1,0 +1,107 @@
+# CATEGORY J -- human, AFRICAN ANCESTRY. 2 Mb region, g5t20 cell. ROUND 3.
+#
+# THIS FILE IS config/human_2Mb_g5t20_r3.yaml WITH ONE PARAMETER CHANGED.
+# Diff it. The only lines that differ are `basename`, `population`, the two
+# seeds, the workdir/publishdir leaf and this header. That identity is the
+# experiment: A and J share the demographic model, the DFE, the recombination
+# and mutation rates, the sample size, the trait architecture and every one of
+# stages 2-5, so A minus J is the ancestry contrast and nothing else.
+#
+# WHAT `population: AFR` DOES. stdpopsim's HomSap / OutOfAfrica_2T12 (Tennessen
+# et al. 2012) has two populations and simulates BOTH forward regardless of
+# which is sampled. Every human arm through category I took
+# `{"AFR": 0, "EUR": n}`; this one takes `{"AFR": n, "EUR": 0}`. Same SLiM run,
+# same cost -- only the retained individuals differ. The EUR branch carries the
+# out-of-Africa bottleneck, so relative to A this arm should show more
+# diversity, more common variation and shorter-range LD, which is exactly the
+# axis colocalization power is sensitive to.
+#
+# Note this is the African branch of a two-population model, NOT an isolated
+# African population: 2T12 has migration between AFR and EUR. Africa_1T12 would
+# be the isolated model, and would make the MODEL differ from A rather than just
+# the sampling.
+#
+# STAGE 1 RUNS HERE. Unlike the multiplier-variant configs, there is no earlier
+# AFR tree sequence to adopt. The stage-1 file is hts_AFR_{seed}.ts rather than
+# hts_{seed}.ts precisely so a EUR tree sequence cannot satisfy it -- adoption
+# matches on filename plus seed, and an A run is otherwise indistinguishable
+# from this one. Leave stage1_search_dirs empty.
+#
+# The g5t20 cell itself is unchanged from A's: gwas_scaling 5, gtex_scaling 20,
+# an ASYMMETRIC cell with a well-powered eQTL side against a weak GWAS side.
+#
+# Per-replicate: override stage1_seed, stage2_seed, workdir and publishdir on
+# the command line. Seeds follow seed = 10*letter_index + replicate, with
+# J the tenth letter: J1 = 101 ... J9 = 109.
+
+pipeline: human
+species: human
+basename: human_afr
+species_prefix: h
+
+# ---- Demography parameters ----
+# The ONE line that makes this category J rather than category A. Read by
+# rules/stage1_human.smk -> human_simulation_o2.py --population; see
+# helpers/human_demography.py. Absent (the default) means EUR.
+population: AFR
+Q_scaling: 10
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t20 cell (x35 run uses 35)
+gtex_scaling: 20       # g5t20 cell (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False   # category J assigns effects the way A does
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+# J1. The band is 101-109, which cannot collide with the 11-99 the letters
+# through I occupy. See README_snakemake.md for the seed rule.
+stage1_seed: 101
+stage2_seed: 101
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# Empty and meant to stay that way: there is no earlier AFR stage 1 to adopt,
+# and the seed-strict lookup would find nothing in a EUR stage1 dir anyway.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/human_afr
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/human_afr
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default

@@ -1,156 +1,91 @@
 #!/bin/bash
-# Pull round-3 2 Mb replicate results from O2 into simulation_data/, fetching only
-# what is COMPLETE upstream and MISSING locally.
+# Mirror the O2 archive into local simulation_data/.
 #
-# WHY GATE ON COMPLETENESS
+#   bash simulations/fetch_round3_2Mb.sh              # report + mirror
+#   DRY=1 bash simulations/fetch_round3_2Mb.sh        # report only
 #
-# A replicate is only usable once stage 4 has written its `.enloc.sig.out`: the R
-# notebook keys colocalization off that file, and a replicate directory holding
-# stage-2 and stage-5 output but no sig.out reads as "this arm colocalized
-# nothing" rather than "this arm is still running". Copying a half-finished
-# replicate down therefore does not just waste a transfer, it produces a
-# plausible wrong number. So a replicate is fetched only when all four pieces are
-# present upstream, and a partially-finished one is REPORTED and skipped.
+# TWO O2 CONNECTIONS, NOT ONE PER REPLICATE
 #
-# Re-run it as jobs land; rsync skips what is already here, so it converges.
+# This used to loop over ~130 replicates calling `ssh` and `rsync -e ssh` once
+# each. Every one of those is an unmultiplexed connection to O2, and O2 re-runs
+# Duo for any connection that does not reuse an existing master -- so a single
+# run could fire a hundred-odd 2FA pushes at the user. That is the whole reason
+# the o2-ssh / o2-rsync wrappers exist: they hold a lock while opening ONE
+# shared connection, and everything afterwards rides on it.
 #
-#   bash simulations/fetch_round3_2Mb.sh              # check + fetch
-#   DRY=1 bash simulations/fetch_round3_2Mb.sh        # report only, transfer nothing
-#   ARMS=cmaf0_fm01_g5t20_2Mb bash simulations/fetch_round3_2Mb.sh   # one arm
+# So: one `o2-ssh` to list the archive, one `o2-rsync` to mirror it. The archive
+# already has the exact layout simulation_data/ uses (<arm>/<replicate>/, flat),
+# which is what makes a single recursive copy sufficient.
 #
-# HOST defaults to o2.hms.harvard.edu because ~/.ssh/config already keeps a
-# ControlMaster open for it (ControlPersist 8h), so repeated runs need no further
-# Duo push. For a bulk first pull, HOST=transfer.rc.hms.harvard.edu is the
-# polite choice -- it opens its own master and costs one push.
+# Run archive_round3_to_data2.sh on O2 first; this only mirrors what is there,
+# and that script only puts a replicate there once all four stages have landed.
+#
+# NEVER add a bare `ssh`, `scp`, or `rsync -e ssh` to this file.
+#
+# AND DO NOT CALL `o2-ssh --check` HERE. It looks like a harmless read-only
+# probe and is not: --check runs the DEEP path, which bounds a no-op at 10
+# seconds and, on timeout, runs `ssh -O exit` and tears the master down
+# (~/.local/bin/o2-ssh:68-78). A loaded O2 login node answers a no-op in more
+# than 10 seconds often enough that a pre-flight --check regularly destroys the
+# connection the user just authenticated -- costing the very Duo push it was
+# meant to save. Plain `o2-ssh '<cmd>'` uses the cheap socket check instead and
+# opens the master on demand, so just issue the command.
 
 set -uo pipefail
 
-HOST="${HOST:-o2.hms.harvard.edu}"
-SCRATCH=/n/scratch/users/n/njc12/snakemake
-LOCAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/simulation_data"
+ARCHIVE="${ARCHIVE:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/new_simulation_set}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL="$(cd "$HERE/.." && pwd)/simulation_data"
 DRY="${DRY:-}"
 
-# local arm directory  <-  O2 root suffix (simulations_round_3_2Mb_<suffix>)
-#
-# The local names are what figures_and_tables/figure2_revision2.ipynb's parse_arm()
-# decodes: `cmaf<digits>` and `fm<digits>` both mean "0." + digits, so cmaf01 is
-# 0.01, cmaf001 is 0.001 and cmaf0 is 0. They are NOT the upstream names and the
-# mapping cannot be derived mechanically -- hence this table.
-ARM_MAP="
-cmaf01_fm01_g5t20_2Mb:g5t20_cmaf_0.01_fm_0.01
-cmaf01_fm01_g10t20_2Mb:g10t20_cmaf_0.01_fm_0.01
-cmaf01_fm01_g5t30_2Mb:g5t30_cmaf_0.01_fm_0.01
-cmaf001_fm01_g5t20_2Mb:g5t20_cmaf_0.001
-cmaf001_fm001_g5t20_2Mb:g5t20_cmaf_0.001_fm_0.001
-cmaf0_fm01_g5t20_2Mb:g5t20_cmaf_0
-cmaf0_fm001_10x_psamp8000_2Mb:x10_psamp_8000_fm_0.001
-cmaf0_fm001_20x_psamp8000_2Mb:x20_psamp_8000_fm_0.001
-cmaf0_fm001_30x_psamp8000_2Mb:x30_psamp_8000_fm_0.001
-"
+command -v o2-ssh >/dev/null || { echo "ERROR: o2-ssh not on PATH -- see the remote-o2 skill." >&2; exit 1; }
 
-WANT_ARMS="${ARMS:-}"
+echo "Listing the archive (1 connection) ..."
+# No pre-flight check: o2-ssh opens the master on demand via its cheap path, and
+# probing first can tear down a healthy connection (see the header).
+REMOTE=$(o2-ssh "cd '$ARCHIVE' && for a in */; do a=\${a%/}; for r in \"\$a\"/*/; do echo \"\$a/\$(basename \$r)\"; done; done") \
+    || { echo "ERROR: could not list $ARCHIVE" >&2; exit 1; }
 
-# One remote pass to classify every replicate, rather than a round trip each.
-# `complete` needs all four: >=4 vars tables, >=4 pheno sbams, >=2 enloc.sig.out
-# (one per analyzed GTEx panel) and >=3 glm lead-SNP tables.
-remote_status() {
-    # $(echo ...) collapses the map onto ONE line before it is interpolated: a
-    # multi-line value would land mid-`for` on the remote side and be a syntax error.
-    ssh "$HOST" 'bash -s' <<REMOTE
-SCRATCH=$SCRATCH
-for pair in $(echo $ARM_MAP); do
-    arm=\${pair%%:*}; sfx=\${pair#*:}
-    ROOT="\$SCRATCH/simulations_round_3_2Mb_\$sfx"
-    [ -d "\$ROOT" ] || { echo "\$arm MISSINGROOT -"; continue; }
-    for D in "\$ROOT"/[A-I][0-9]*; do
-        [ -d "\$D" ] || continue
-        ID=\$(basename "\$D")
-        nv=\$(compgen -G "\$D/stage2/*/*/*_vars_*.tsv" | wc -l)
-        np=\$(compgen -G "\$D/stage2/*/*/*_pheno.sbams" | wc -l)
-        n4=\$(compgen -G "\$D/stage4/*/*.enloc.sig.out" | wc -l)
-        n5=\$(compgen -G "\$D/stage5/*/*_glm_lead_snps.tsv" | wc -l)
-        if [ "\$nv" -ge 4 ] && [ "\$np" -ge 4 ] && [ "\$n4" -ge 2 ] && [ "\$n5" -ge 3 ]; then
-            echo "\$arm \$ID complete"
-        else
-            echo "\$arm \$ID partial v\$nv/p\$np/e\$n4/g\$n5"
-        fi
-    done
-done
-REMOTE
-}
-
-echo "Querying $HOST ..."
-STATUS=$(remote_status) || { echo "ERROR: could not query $HOST" >&2; exit 1; }
-
-n_fetch=0; n_have=0; n_wait=0; n_new_dir=0
-for pair in $ARM_MAP; do
-    arm="${pair%%:*}"; sfx="${pair#*:}"
-    [ -n "$WANT_ARMS" ] && [[ " $WANT_ARMS " != *" $arm "* ]] && continue
-
-    todo=""; waiting=""; have=""
-    while read -r a id state extra; do
-        [ "$a" = "$arm" ] || continue
-        [ "$id" = "MISSINGROOT" ] && continue
-        if [ "$state" != "complete" ]; then
-            waiting="$waiting ${id}(${extra})"
-        elif [ -d "$LOCAL/$arm/$id" ] && compgen -G "$LOCAL/$arm/$id/*.enloc.sig.out" > /dev/null 2>&1; then
-            have="$have $id"
-        else
-            todo="$todo $id"
-        fi
-    done <<< "$STATUS"
-
-    [ -z "$todo$waiting$have" ] && continue
-    echo
-    echo "### $arm  <-  simulations_round_3_2Mb_$sfx"
-    [ -n "$have" ]    && { echo "  already local:$have";  n_have=$(($n_have + $(echo $have | wc -w))); }
-    # Incomplete means running OR failed -- this cannot tell them apart, and a
-    # six-day-old empty workdir looks identical to one queued a minute ago.
-    # Check squeue, then the workdir's controller_*.err, before assuming patience.
-    [ -n "$waiting" ] && { echo "  INCOMPLETE   :$waiting"; n_wait=$(($n_wait + $(echo $waiting | wc -w))); }
-    [ -z "$todo" ]    && continue
-    echo "  TO FETCH:$todo"
-
-    if [ ! -d "$LOCAL/$arm" ]; then
-        echo "  creating $LOCAL/$arm"
-        [ -z "$DRY" ] && mkdir -p "$LOCAL/$arm"
-        n_new_dir=$((n_new_dir + 1))
+n_remote=$(printf '%s\n' "$REMOTE" | grep -c .)
+missing=""; present=0
+while read -r rel; do
+    [ -n "$rel" ] || continue
+    if compgen -G "$LOCAL/$rel/*.enloc.sig.out" > /dev/null 2>&1; then
+        present=$((present + 1))
+    else
+        missing="$missing $rel"
     fi
-
-    for ID in $todo; do
-        DEST="$LOCAL/$arm/$ID"
-        R="$SCRATCH/simulations_round_3_2Mb_$sfx/$ID"
-        # Flat into the replicate directory, matching the layout every existing arm
-        # uses. The two sidecars are new: _trait_partners_ is the GWAS/GTEx pairing
-        # answer key (only written where the GTEx set is topped up, i.e. power
-        # sampling and the drawn-DFE arms H/I), and _synthetic_dfe_ carries the drawn
-        # coefficients, which the *_vars_*.tsv files deliberately leave at zero.
-        SRC="$R/stage2/*/*/*_pheno.sbams \
-             $R/stage2/*/*/*_vars_*.tsv \
-             $R/stage2/*/*/*_trait_partners_*.tsv \
-             $R/stage2/*/*/*_synthetic_dfe_*.tsv \
-             $R/stage4/*/*.enloc.sig.out \
-             $R/stage5/*/*_glm_lead_snps.tsv"
-        if [ -n "$DRY" ]; then
-            echo "    DRY $ID"
-            n_fetch=$((n_fetch + 1)); continue
-        fi
-        mkdir -p "$DEST"
-        # --ignore-missing-args so the optional sidecars do not fail the whole
-        # replicate on an arm that never writes them.
-        if rsync -a --ignore-missing-args -e ssh "$HOST:$SRC" "$DEST/" 2>/dev/null; then
-            printf "    %-4s %2d files\n" "$ID" "$(ls "$DEST" | wc -l | tr -d ' ')"
-            n_fetch=$((n_fetch + 1))
-        else
-            echo "    $ID: WARN rsync returned non-zero" >&2
-        fi
-    done
-done
+done <<< "$REMOTE"
 
 echo
+echo "archive: $n_remote replicates   local: $present   missing locally:$(
+    [ -n "$missing" ] && echo "$missing" || echo ' none')"
+
+if [ -n "$DRY" ]; then
+    echo
+    echo "DRY=1 -- nothing transferred."
+    exit 0
+fi
+
+echo
+echo "Mirroring (1 connection, via the transfer node) ..."
+# -rlt not -a: -a implies -pgo, and preserving the archive's setgid group
+# permissions onto local APFS fails with "fchmodat: Operation not permitted",
+# which makes rsync exit non-zero on transfers that actually succeeded.
+# transfer: rather than the login node -- this can move gigabytes.
+# NO --info=stats2 and no --stats: macOS ships openrsync (protocol 29), which
+# has neither, and an unknown option there is fatal -- it prints its whole usage
+# block and exits non-zero, the same class of wart as the --ignore-missing-args
+# failure the header describes. The transfer then only happens on the retry.
+o2-rsync -rlt "transfer:$ARCHIVE/" "$LOCAL/" \
+    || o2-rsync -rlt "transfer:$ARCHIVE/" "$LOCAL/"
+
+echo
+still=0
+while read -r rel; do
+    [ -n "$rel" ] || continue
+    compgen -G "$LOCAL/$rel/*.enloc.sig.out" > /dev/null 2>&1 || { echo "  STILL MISSING: $rel"; still=$((still + 1)); }
+done <<< "$REMOTE"
 echo "================================================================"
-echo "fetched=$n_fetch  already_local=$n_have  incomplete_upstream=$n_wait  new_dirs=$n_new_dir"
-[ -n "$DRY" ] && echo "DRY=1 -- nothing transferred."
-[ "$n_wait" -gt 0 ] && echo "Re-run when those finish; it only pulls what is missing. If one is not in
-squeue, it FAILED rather than being slow -- read its controller_*.err."
+echo "archive=$n_remote replicates   local now=$((n_remote - still))   still missing=$still"
 exit 0

@@ -14,7 +14,7 @@ import gzip
 
 # sys.path[0] is this script's directory, so `helpers` resolves however the script
 # is invoked -- by absolute path from a Snakemake rule, or by hand from anywhere.
-from helpers import causal_power, params_record, paths, synthetic_dfe
+from helpers import causal_power, neutral_thinning, params_record, paths, synthetic_dfe
 
 
 def str2bool(s):
@@ -289,9 +289,23 @@ def causal_eligible(vars_df, pos_lo, pos_hi, causal_min_maf, synthetic=False):
     The uniform path never had to say this because a non-zero causal_min_maf
     excluded those sites incidentally.
 
-    `synthetic` drops the `selco != 0` requirement, for the neutral simulations
-    (category H) where no variant carries a selection coefficient and the causal
-    set is drawn from all of them -- see --synthetic_dfe_effects.
+    `synthetic` REPLACES `selco != 0` with `selco == 0`: the causal set is drawn
+    from the strictly NEUTRAL variants, and its effect sizes come from the drawn
+    DFE instead (--synthetic_dfe_effects, helpers/synthetic_dfe.py).
+
+    For categories H and I this is a no-op by construction -- their stage 1 is a
+    pure coalescent, so every variant has selco == 0 and "all of them" and "the
+    neutral ones" are the same set (verified: 0 of 39,842 H1 variants and 0 of
+    4,196 I1 variants carry a coefficient). It is load-bearing for the background
+    selection categories K and L, whose stage 1 IS a forward run under the DFE:
+    there the genome carries selected variants, and the whole point of the arm is
+    that the causal loci are not among them. Dropping the filter rather than
+    inverting it would silently let those arms draw selected variants and assign
+    them a second, unrelated coefficient.
+
+    Order matters: this runs BEFORE synthetic_dfe.apply_to overwrites `selco`
+    with the drawn values, so the predicate sees the tree sequence's own
+    coefficients.
 
     NOTE this is the GWAS-panel pool only. The uniform path additionally
     intersects with the GTEx panel at the call site; the power path deliberately
@@ -301,13 +315,13 @@ def causal_eligible(vars_df, pos_lo, pos_hi, causal_min_maf, synthetic=False):
             & (vars_df['maf'] >= causal_min_maf)
             & (vars_df['position'] > pos_lo)
             & (vars_df['position'] < pos_hi))
-    if not synthetic:
-        keep &= (vars_df['selco'] != 0)
+    keep &= (vars_df['selco'] == 0) if synthetic else (vars_df['selco'] != 0)
     return vars_df.loc[keep]
 
 
 def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
-                         min_pool_multiple, seed, maf_by_position=None, label=''):
+                         min_pool_multiple, seed, maf_by_position=None, label='',
+                         power_plateau=causal_power.NO_PLATEAU):
     """Draw `n` causal loci with inclusion probability proportional to GWAS power.
 
     Each candidate's weight is its probability of reaching `sig_p` in a GWAS of
@@ -322,6 +336,13 @@ def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
     to a neutral recipient, so the power a locus actually has is set by the
     recipient's frequency and the donor's beta, and weighting on the donor's own
     MAF would rank the pool by a quantity no downstream test ever sees.
+
+    `power_plateau` < 1 switches the weight from power to min(power, plateau):
+    past the plateau a variant is treated as certain to be found, so extra power
+    buys no extra representation. It shapes the WEIGHT only -- the pool guard
+    below and the diagnostics both stay on raw power, because "is this pool
+    detectable at all" is a question the flattened weight cannot answer. See
+    helpers/causal_power.saturated_weights.
 
     Raises SystemExit when too little of the pool is detectable at all. A draw
     from a pool where only a handful of variants carry real weight is not a
@@ -350,7 +371,8 @@ def select_central_power(pool, n, scaling, sampling_n, sig_p, min_power,
             '--sampling_gwas_n or the phenotype scaling, or loosen --sampling_sig_p.'
         )
 
-    pi = causal_power.inclusion_probabilities(power, n)
+    weights = causal_power.saturated_weights(power, power_plateau)
+    pi = causal_power.inclusion_probabilities(weights, n)
     idx = causal_power.systematic_sample(pi, np.random.default_rng(seed))
 
     diagnostics = pd.DataFrame({
@@ -458,8 +480,7 @@ def flank_eligible(gtex_vars, causal_min_maf, flank_lo, flank_hi, synthetic=Fals
     keep = ((gtex_vars['maf'] > 0)
             & (gtex_vars['maf'] >= causal_min_maf)
             & ((gtex_vars['position'] <= flank_lo) | (gtex_vars['position'] >= flank_hi)))
-    if not synthetic:
-        keep &= (gtex_vars['selco'] != 0)
+    keep &= (gtex_vars['selco'] == 0) if synthetic else (gtex_vars['selco'] != 0)
     return gtex_vars.loc[keep]
 
 
@@ -479,7 +500,7 @@ def select_flank_gtex(gtex_vars, causal_min_maf, flank_lo, flank_hi, n, seed,
     causal_eligible: at causal_min_maf = 0 the floor alone would admit sites
     monomorphic in this panel.
 
-    `synthetic` drops the `selco != 0` requirement -- see causal_eligible."""
+    `synthetic` swaps `selco != 0` for `selco == 0` -- see causal_eligible."""
     return subsample_traits(
         flank_eligible(gtex_vars, causal_min_maf, flank_lo, flank_hi, synthetic),
         n, seed)
@@ -708,6 +729,19 @@ def get_arguments():
     parser.add_argument('--already_includes_neutral', type=str2bool, required=False, default=False, help='Only needed if you already added neutral mutations in the input data')
     parser.add_argument('--seed', type=int, default=19930224)
     parser.add_argument('--neutral_trait_vars', type=str2bool, required=False, default=False, help='Redistribute each non-zero effect size from its causal (selco != 0) donor variant to a random eligible neutral (selco == 0) recipient. Trait IDs are named for the recipient position. The redistribution is identical across GWAS and GTEx samples and is seeded by --seed.')
+    parser.add_argument('--neutral_keep_fraction', type=float, required=False, default=1.0,
+                        help='Keep only this fraction of the NEUTRAL (selco == 0) sites, '
+                             'deleting a seeded random remainder before the GWAS/GTEx '
+                             'split. 1.0 (default) keeps every site and does no work. '
+                             'Distributionally identical to having run the 8.4e-9 neutral '
+                             'overlay at this fraction of its rate (Poisson thinning), '
+                             'which is how categories O and P get a low-heterozygosity '
+                             'genome while REUSING A\'s and E\'s stage-1 tree sequences. '
+                             'Only selco == 0 sites are touched, so the causal pools, the '
+                             'power weights and the drawn trait positions are identical to '
+                             'the un-thinned arm at the same seed. Mutually exclusive with '
+                             '--synthetic_dfe_effects and --neutral_trait_vars, for which '
+                             'the neutral class IS the causal pool.')
     parser.add_argument('--synthetic_dfe_effects', type=str2bool, required=False,
                         default=False,
                         help='For tree sequences with no selection in them at all (the '
@@ -754,6 +788,13 @@ def get_arguments():
                         help='Power a pool variant must reach to count toward the sanity check '
                              'below (default 0.05). Variants under it stay in the pool and keep '
                              'their (tiny) weight; this is a diagnostic floor, not a filter.')
+    parser.add_argument('--sampling_power_plateau', type=float, required=False, default=1.0,
+                        help='Saturate the sampling weight at this power (default 1.0 = '
+                             'no plateau, the historical behaviour). At 0.5 every variant '
+                             'with power >= 0.5 carries the same weight, so relative power '
+                             'stops mattering once detection is effectively assured. '
+                             'Applies to the WEIGHT only; --sampling_min_power still gates '
+                             'pool eligibility on raw power.')
     parser.add_argument('--sampling_min_pool_multiple', type=float, required=False, default=2.0,
                         help='Refuse to run unless at least this multiple of --n_central_traits '
                              'pool variants reach --sampling_min_power (default 2). Guards '
@@ -788,6 +829,27 @@ if __name__ == '__main__':
             '(H uses --synthetic_dfe_effects; B and D use --neutral_trait_vars).'
         )
 
+    # Thinning the neutral class is only a change in BACKGROUND density where the
+    # causal loci come from somewhere else. Under --synthetic_dfe_effects the
+    # causal loci are the selco == 0 variants, and under --neutral_trait_vars the
+    # effect recipients are, so thinning would halve the causal pool while looking
+    # like a change in variant density. The Snakefile refuses this too; repeated
+    # here so a hand invocation cannot slip past.
+    neutral_keep_fraction = args.neutral_keep_fraction
+    if neutral_keep_fraction != 1.0:
+        if synthetic_effects or args.neutral_trait_vars:
+            raise SystemExit(
+                f'--neutral_keep_fraction {neutral_keep_fraction} cannot be combined '
+                'with --synthetic_dfe_effects or --neutral_trait_vars: those draw '
+                'their causal loci (or effect recipients) FROM the selco == 0 '
+                'variants, so thinning them changes the causal pool rather than the '
+                'background. Categories O and P thin A\'s and E\'s genomes, where '
+                'the causal pool is selco != 0 and is left alone.'
+            )
+        print(f'Neutral thinning ON: keeping {neutral_keep_fraction:g} of the '
+              'selco == 0 sites (Poisson-equivalent to that fraction of the 8.4e-9 '
+              'neutral overlay rate)')
+
     # Trait-associated (causal) variants are restricted to the central region,
     # excluding a 500 kb buffer from each edge. Computed from L so a smaller
     # region gets the correct central window (L=2 Mb -> [5e5, 1.5e6], a 1 Mb
@@ -821,6 +883,9 @@ if __name__ == '__main__':
 
     # Clean up the data
     print('Loading data')
+    # Set by whichever species branch runs; stays empty at keep_fraction 1.0 so
+    # the stage-2 sidecar of an un-thinned arm gains no keys.
+    thin_counts = {}
     if run_cows:
         # cows = tskit.load('/Users/noah/comparative_colocalization/data/simulations/demographic_simulations/cattle/farm_selection_Q_0.01.L_10000000.seed_20250303.full.ts')
         cows = tskit.load(args.cattle_ts_file)
@@ -841,6 +906,12 @@ if __name__ == '__main__':
         # with identical inputs produced byte-different VCFs.
         cows = pyslim.convert_alleles(pyslim.generate_nucleotides(cows, seed=args.seed))
         cows = remove_position_zero(cows)
+        # LAST, so surviving sites keep byte-identical positions, alleles and
+        # genotypes to the un-thinned arm, and the GWAS/GTEx split below -- which
+        # indexes individuals, not sites -- puts the same individuals in the same
+        # panels. That is what makes P_i's variant set a strict subset of E_i's.
+        cows, thin_counts = neutral_thinning.thin_neutral_sites(
+            cows, neutral_keep_fraction, args.seed)
     if run_hums:
         # hums = tskit.load('/Users/noah/comparative_colocalization/data/simulations/demographic_simulations/human/human_selection_Q_1.L10000000.seed_20250521.full.ts')
         hums = tskit.load(args.human_ts_file)
@@ -862,6 +933,10 @@ if __name__ == '__main__':
         # does above, and adds nothing when already_includes_neutral=True.
         hums = pyslim.convert_alleles(pyslim.generate_nucleotides(hums, seed=args.seed))
         hums = remove_position_zero(hums)
+        # See the cattle branch: thinning is the last thing done to the tree
+        # sequence, so O_i's variant set is a strict subset of A_i's.
+        hums, thin_counts = neutral_thinning.thin_neutral_sites(
+            hums, neutral_keep_fraction, args.seed)
 
     # Split into GWAS and GTEx
     print('Splitting into GWAS and GTEx')
@@ -1030,7 +1105,7 @@ if __name__ == '__main__':
             # is the "draw s for the whole pool, then compute power" order.
             pool = synthetic_dfe.apply_to(pool, *synth)
         pool_counts['causal_eligible_gwas_sample'] = int(pool.shape[0])
-        selco_clause = '' if synthetic_effects else 'selco != 0, '
+        selco_clause = 'selco == 0, ' if synthetic_effects else 'selco != 0, '
         if topup_gtex:
             pool_counts['causal_eligible'] = int(pool.shape[0])
             print(f'Number of causative {species_label} variants ({selco_clause}central '
@@ -1161,7 +1236,8 @@ if __name__ == '__main__':
             hcausative_maf01, power_diag['hgwas'] = select_central_power(
                 hcausative_maf01, args.n_central_traits, gwas_scaling, sampling_n,
                 args.sampling_sig_p, args.sampling_min_power, args.sampling_min_pool_multiple,
-                args.seed, maf_by_position=hpower_maf, label='human')
+                args.seed, maf_by_position=hpower_maf, label='human',
+                power_plateau=args.sampling_power_plateau)
         else:
             hcausative_maf01 = subsample_traits(hcausative_maf01, args.n_central_traits, args.seed)
         if topup_gtex:
@@ -1196,7 +1272,8 @@ if __name__ == '__main__':
             ccausative_maf01, power_diag['cgwas'] = select_central_power(
                 ccausative_maf01, args.n_central_traits, gwas_scaling, sampling_n,
                 args.sampling_sig_p, args.sampling_min_power, args.sampling_min_pool_multiple,
-                args.seed + 2*10**7, maf_by_position=cpower_maf, label='cattle')
+                args.seed + 2*10**7, maf_by_position=cpower_maf, label='cattle',
+                power_plateau=args.sampling_power_plateau)
         else:
             ccausative_maf01 = subsample_traits(ccausative_maf01, args.n_central_traits, args.seed + 2*10**7)
         if topup_gtex:
@@ -1409,6 +1486,12 @@ if __name__ == '__main__':
         pass
     # Keyed by CONFIG name rather than CLI name, so stage2_uid here and in the
     # run-level record are computed over the same dict and can be compared.
+    # Thinning outcomes travel with the pool counts: they are what the arm was
+    # calibrated to produce (pi_ratio should land on the target), and they are the
+    # cheapest check that O_i really is A_i minus neutral sites.
+    if thin_counts:
+        pool_counts.update({f'thin_{k}': v for k, v in thin_counts.items()})
+
     params_record.write_stage2_params(
         f'{sim_dir}/stage2_params.txt',
         values={
@@ -1422,6 +1505,7 @@ if __name__ == '__main__':
             'n_flank_gtex_traits': args.n_flank_gtex_traits,
             'neutral_trait_vars': args.neutral_trait_vars,
             'synthetic_dfe_effects': args.synthetic_dfe_effects,
+            'neutral_keep_fraction': neutral_keep_fraction,
             'already_includes_neutral': args.already_includes_neutral,
             'L': args.length,
             'Q_scaling': q_scaling,
@@ -1434,6 +1518,7 @@ if __name__ == '__main__':
             'sampling_gwas_n': sampling_n,
             'sampling_sig_p': args.sampling_sig_p,
             'sampling_min_power': args.sampling_min_power,
+            'sampling_power_plateau': args.sampling_power_plateau,
             'sampling_min_pool_multiple': args.sampling_min_pool_multiple,
             'species': 'human' if run_hums else 'cattle',
         },

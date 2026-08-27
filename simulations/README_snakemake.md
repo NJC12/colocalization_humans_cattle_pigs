@@ -615,6 +615,351 @@ without `##fileformat=…` headers). Override by setting
 | Cattle     |     8,000 | 1,000, 500, 250 | Directional (positive)                 | no             | G  |   cattle_sel_not_bottlenecked |          4 |
 | Human      |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | NA             | H  |                 human_neutral |          5 |
 | Cattle     |     8,000 | 1,000, 500, 250 | None anywhere (neutral genealogy)      | yes            | I  |                cattle_neutral |          5 |
+| Human (AFR)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | J  |                         human | 5 *(planned)* |
+| Human      |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | NA             | K  |                         human | 5 *(planned)* |
+| Cattle     |     8,000 | 1,000, 500, 250 | In the GENOME, not on trait variants   | yes            | L  | cattle_baseline_from_midpoint | 5 *(planned)* |
+| Human (FIN)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | founder event  | M  |                         human | 5 *(planned)* |
+| Human (NFE)|     8,000 | 1,000, 500, 250 | Directional (negative)                 | NA             | N  |                         human | 5 *(planned)* |
+| Human      |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | NA             | O  |                         human | 5 *(planned)* |
+| Cattle     |     8,000 | 1,000, 500, 250 | Directional (negative), pi HALVED       | yes            | P  | cattle_baseline_from_midpoint | 5 *(planned)* |
+
+## Categories K and L: background selection
+
+A and H differ in two things at once. A's genome comes from a forward run under
+the DFE and its causal loci are the selected variants; H's genome is a pure
+coalescent and its causal loci are neutral variants carrying drawn effect sizes.
+So A - H is a genealogy difference and an effect-assignment difference summed
+together, and nothing in the category set separated them.
+
+K and L are the missing cell. They take **A's and E's genomes** -- forward runs
+under the DFE, so the genealogy carries background selection -- and put **H's and
+I's effect model** on top: the causal loci are drawn from the strictly NEUTRAL
+variants (`selco == 0`) and their betas come from the truncated DFE rather than
+from the variant's own coefficient. That gives a 2x2:
+
+|                    | causal = selected variants | causal = neutral, drawn betas |
+| ------------------ | -------------------------- | ----------------------------- |
+| genome under selection | A / E                  | **K / L**                     |
+| genome neutral (coalescent) | --                | H / I                         |
+
+so **K - H isolates the genealogy** (background selection alone, effect model
+held fixed) and **A - K isolates the effect assignment** (genealogy held fixed).
+L - I and E - L do the same on the cattle side.
+
+Mechanically they are A's and E's configs plus one override,
+`synthetic_dfe_effects=True`, exactly as B is A's config plus
+`neutral_trait_vars=True`. The stage-1 genetic model is byte-identical to A/E.
+
+One subtlety in the implementation. `synthetic_dfe_effects` used to mean "drop
+the `selco != 0` requirement on the causal pool", which is fine for H and I --
+their coalescent genomes have no selected variants at all, so "all variants" and
+"the neutral variants" are the same set. On A's and E's genomes those differ, and
+dropping the filter would have let K and L draw *selected* variants and then
+assign them a second, unrelated coefficient. The predicate is now `selco == 0`
+when synthetic, which is provably inert for H and I (0 of 39,842 H1 variants and
+0 of 4,196 I1 variants carry a coefficient) and load-bearing for K and L.
+
+
+## Categories M and N: the Finnish founder pair
+
+M and N are the first arms to run a demography that is **not in stdpopsim's
+catalog**. `demographic_model: FinnishWang2014` names an entry in
+`helpers/human_demography.MODELS`, which points at the demes graph
+`demography/finnish_demo_wang_2014.yaml` — Wang, Agarwala, Flannick, Chiang,
+Altshuler & Hirschhorn (2014), *Am J Hum Genet* 94:710–720, Table S2 class 3.
+`human_simulation_o2.py` turns it into a `stdpopsim.DemographicModel` via
+`msprime.Demography.from_demes` and hands it to the same SLiM engine every other
+human arm uses; the contig, the DFE, the mutation and recombination rates and
+every one of stages 2–5 are unchanged.
+
+**They are a pair, and only make sense read as one.**
+
+| contrast | what it isolates |
+| -------- | ---------------- |
+| M − N    | the Finnish founder event. Same model, same Q, same seed rule, same everything — only which deme is retained differs. |
+| N − A    | the model swap: Wang-2014 NFE against Tennessen-2012 EUR. |
+
+M against A on its own would swap the founder event *and* the whole model at
+once (root Ne 8,100 vs 7,310, present-day 111,394 vs 512,000, different growth
+schedules), which is why N exists at all. The two config files are identical
+except for `basename`, `population`, the two seeds and the workdir/publishdir
+leaf, and `helpers/tests/test_finnish_demography.py` asserts exactly that.
+
+### Why `Q_scaling` is 3 and not 10
+
+This is forced, not a preference, and it is the one number in these arms that
+cannot be changed casually. stdpopsim's SLiM engine refuses to sample more
+individuals than the **Q-rescaled** deme holds at the sampling tick
+(`slim_engine.py`: *"Request to sample N individuals from pX … but only M
+individuals will be alive"*) — and it finds out at the very end, after the whole
+forward simulation has run. Stage 1 samples `gwas_size + 1000 = 9,000`:
+
+    individuals alive at the sampling tick, MEASURED from SLiM:
+
+      Q      FIN      NFE     verdict for a 9,000-individual draw
+     10    2,266   10,653     FIN fails
+      5    4,531   21,306     FIN fails
+      4    7,491   27,437     FIN fails
+      3    9,988   36,583     both OK -- FIN by a margin of 988
+
+Note these are NOT `present_size / Q`. stdpopsim rounds epoch boundaries to
+whole ticks, which truncates the tail of the exponential growth, so the naive
+figure overshoots by 13–34% (it promises 11,486 at Q=3 where SLiM delivers
+9,988). `helpers/human_demography.SLIM_CAPACITY` holds the measured numbers and
+the recipe for measuring more; `test_finnish_demography.py` refuses a config
+whose (model, population, Q) has not been measured rather than falling back to
+the arithmetic.
+
+NFE would in fact fit at Q=10 (10,653 alive). It runs at 3 anyway, because M − N
+is only the founder event if the two arms are Q-matched.
+
+SLiM cost scales as 1/Q², and the burn-in dominates: stdpopsim's default
+`slim_burn_in=10` gives 10 × 8,100 / 3 = 27,000 ticks over 2,700 diploids,
+against A's 7,310 ticks over 731. That is roughly 11× A's stage 1, so ~12 h
+rather than ~1 h. `rules/stage1_human.smk` routes any small-`L` run below Q=10
+to `medium` with 4 days and 16 GB for exactly this reason.
+
+Two consequences worth stating rather than discovering:
+
+* `Q_scaling` is in `params_record.STAGE2_KEYS`, so M and N can never silently
+  adopt A's stage 2 — they build their own, which is what the `^(K|L|M|N)$`
+  branch in `submit_2Mb_r3_cmaf_fm001.sh` arranges.
+* M and N run at a **different Q than A**, so an M-vs-A or N-vs-A difference is
+  not entirely free of rescaling artifact (Q=3 is the more accurate of the two).
+  M − N is internally Q-matched, which is the other reason the pair exists.
+
+Two smaller things the scaling does. Sampling 9,000 of FIN's 9,988 is a 90%
+sample where A takes 17.6% of EUR — relatedness is not the problem that looks
+like (the expected number of full-sib pairs in a Wright-Fisher deme that size is
+under one), but the sample's site-frequency spectrum is essentially the
+population's, which matters when MAF distributions are compared against A's. And
+the model's 13-generation fast-growth epoch is 4.33 ticks at Q=3, since stdpopsim
+rounds epoch boundaries to whole ticks. That rounding is exactly what costs the
+1,498 individuals above, and it makes the shape of the final expansion coarse.
+
+### Filenames
+
+M's stage-1 tree sequence is `hts_finwang_FIN_{seed}.ts` and N's is
+`hts_finwang_NFE_{seed}.ts`. Both halves of that name are load-bearing: the tag
+because M and N share a model, the deme because that is all they differ by. For
+human filenames the seed half of stage-1 adoption never fires — `search_dirs`
+matches `sd\d+|seed_\d+`, which no `hts_*` name contains — so the filename is
+the whole guard, and `params_record.STAGE2_KEYS` omits every demography key on
+exactly that basis.
+
+### The three CHOSEN parameters
+
+The demes file marks three values as chosen within ranges the paper reports:
+slow-phase growth 2%/generation (range 0.5–5%), fast-phase growth 15% (range
+8–30%) and NFE→FIN migration 2% (range 0.5–7%). Together they leave present-day
+Finnish Ne very loosely determined — the corners span ~4,200 to ~2.1 million.
+Treat them as a sensitivity axis. The registry is keyed by model id precisely so
+a corner run can be added as a **second entry** with its own tag and its own
+`hts_*` namespace, rather than by editing the file underneath results that
+already exist. Note that changing the growth rates moves the present-day size
+that `Q_scaling: 3` was chosen against; `test_finnish_demography.py` pins both
+numbers and checks the cap for every config.
+
+## Categories O and P: low heterozygosity
+
+Every other contrast on the category axis changes *which* variants are causal, or
+*which* demography produced them. None of them changes how much neutral variation
+the genome carries -- and that is not a nuisance parameter here. Variant density
+sets LD-tagging, the size of the DAP-G candidate set and therefore fine-mapping
+difficulty, and the two species differ in it enormously: E carries 1,365
+segregating sites at 2 Mb where A carries ~36,000. Any A-vs-E number is partly a
+density difference, and nothing separated it out.
+
+**O is A with pi halved, and P is E with pi halved.** Nothing else differs -- not
+the demography, not the DFE, not the seeds, not the causal loci.
+
+### Why it is a deletion and not a lower mutation rate
+
+Neutral mutations are not part of either species' forward simulation. They are a
+Poisson overlay on branches the forward run has already fixed: 8.4e-9 in
+`human_simulation_o2.py` (stage 1, so they arrive inside `hts_*.ts`) and 8.4e-9
+in `create_gwas_files_and_phenotypes.add_neutral` (stage 2, in two passes across
+the cattle Q handoff). Dropping each neutral site independently with probability
+`1 - k` is the thinning of a Poisson process, and a thinned Poisson process is a
+Poisson process at the thinned rate.
+
+So `neutral_keep_fraction: k` is not an approximation of "re-simulate at
+`k x 8.4e-9`" -- conditional on the genealogy it has exactly that distribution.
+Three things follow, and they are the whole reason the arm is built this way:
+
+* **One mechanism for both species.** The human overlay is a stage-1 literal and
+  the cattle one a stage-2 literal, but the thinning happens in stage 2 after
+  `add_neutral` and after `remove_fixed`, so a single code path
+  (`helpers/neutral_thinning.py`) serves both.
+* **Stage 1 is reused, not rerun.** O_i adopts A_i's `hts_1i.ts` and P_i adopts
+  E_i's `farm_selection_from_ep8...seed_5i.full.ts`.
+* **The causal architecture is untouched, provably.** `causal_eligible`,
+  `flank_eligible`, `select_central_power` and `select_gtex_topup` all select on
+  `selco != 0`; the thinning only ever deletes `selco == 0`. So the pools, the
+  pi-PS weights, the 50 drawn central positions, the flank loci, the effect sizes
+  and the `*_trait_partners_*.tsv` tables come out **identical** to the parent
+  category's at the same seed. `helpers/tests/test_lowhet_categories.py` pins
+  that the two modules read the same metadata field by the same route, which is
+  the one way it could quietly stop being true.
+
+### They share A's and E's seed bands, deliberately
+
+This is the only place the `seed = 10 * letter_index + replicate` rule is broken,
+and it is broken on purpose. O{N} runs at seed 1{N} and P{N} at 5{N} -- their
+parents' seeds -- because that is what makes O_i's variant set a **strict subset**
+of A_i's: the same genealogy, the same individuals in the same panels, the same
+causal loci, with some of the background removed. A - O therefore carries no
+replicate noise at all, which no other pair on this axis manages.
+
+Two consequences, both enforced:
+
+* **O and P must never run their own stage 1.** A private seed band would make
+  them do exactly that and silently turn a paired contrast into an unpaired one.
+  `stage1_donor_of()` in the two submit scripts redirects the stage-1 lookup
+  (`O<i> -> A<i>`, `P<i> -> E<i>`), the stage-1 filename builders read
+  `stage1_seed` and not `basename` so the adoption still resolves, and
+  `submit_2Mb_r3_cmaf_replicates.sh` -- the script that *does* build stage 1 --
+  has no O or P entry at all.
+* **O and P must never adopt A's or E's stage 2.** `neutral_keep_fraction` is in
+  `params_record.STAGE2_KEYS`, so the provenance guard refuses a mismatched
+  directory loudly, and `stage2_run_tag` carries a `.nkeep_<token>` segment so
+  they cannot land on the same path in the first place. In
+  `submit_2Mb_r3_cmaf_fm001.sh` they sit in the `^(K|L|M|N|O|P)$` fresh-stage-2
+  branch.
+
+### The keep fraction is measured, not chosen
+
+pi is additive over sites and thinning does not move any surviving site's
+frequency, so
+
+```
+E[pi(k)] = k * pi_neutral + pi_selected
+```
+
+and halving pi is solved, not searched:
+
+```
+k = 0.5 * (1 - pi_selected / pi_neutral)
+```
+
+`helpers/measure_pi_components.py` replays the stage-2 preamble on a stage-1 tree
+sequence -- including the cattle `add_neutral` overlay, without which the cattle
+selected share would read as ~1.0 -- and reports both components and the implied
+k. `calibrate_lowhet.sh` runs it over all ten donors and prints the mean per
+species, which is the line to paste into the config:
+
+```bash
+DRY=1 bash calibrate_lowhet.sh     # resolve every donor path, submit nothing
+bash calibrate_lowhet.sh           # one short job; writes helpers/pi_components_lowhet.tsv
+```
+
+**k differs between the species** (cattle's selected sites carry a different
+share of its pi), which is why the two configs carry different numbers rather
+than a shared constant.
+
+Measured 2026-08-27 (job 51523508, `helpers/pi_components_lowhet.tsv`):
+
+| | selected share of pi | k, mean over 5 | k range | pinned | EXPECTED pi ratio |
+|---|---:|---:|---|---:|---|
+| A1-A5 (-> O) | 0.2794 | 0.3061 | 0.2991-0.3163 | **0.306** | 0.4924-0.5049 |
+| E1-E5 (-> P) | 0.2948 | 0.2909 | 0.2777-0.3056 | **0.291** | 0.4895-0.5092 |
+
+The last column is `E[pi(k)]/pi(1)` evaluated at the pinned k -- an expectation,
+not an outcome. The deletion is a random subset, so the realized ratio scatters
+around it: the O1 and P1 pilots both landed at **0.508**, slightly above the
+expected 0.502 and 0.500 and outside the tabulated range. That scatter is the
+draw, not a mis-set k, and `thin_pi_ratio` in each replicate's
+`stage2_params.txt` is the number to read for what actually happened.
+
+The two species land close together, which is a coincidence of this cell and not
+a reason to share one constant. Note also how much *more* than half the neutral
+class this removes -- ~69-71% of it -- which is the composition effect below,
+quantified. Do this BEFORE launching anything: both submit scripts
+refuse an O or P whose config has no `neutral_keep_fraction`, because the key
+defaults to keep-everything and the run would otherwise be a byte-identical copy
+of its parent under a different name -- a null result that looks like a
+measurement.
+
+If `pi_selected >= 0.5 * pi_total` for a species, k comes out negative: no amount
+of neutral thinning halves that species' pi. `keep_fraction_for_pi_target` raises
+with the numbers rather than clamping, because a clamped k would deliver a
+different experiment under the same name.
+
+### What the target costs in composition -- quote this with any O - A number
+
+Halving pi removes **more** than half the neutral sites, because pi is dominated
+by the neutral class, which is also the common half of the frequency spectrum. So
+the total site count falls by more than the pi target, and the selected:neutral
+ratio shifts toward selected: O and P are **enriched for rare, low-MAF selected
+variants** relative to A and E.
+
+That is a consequence of sizing the cut against pi rather than against the neutral
+count, not a defect -- but it means O is not "A with fewer markers" in every
+respect, and a difference in, say, the MAF distribution of the fine-mapping
+candidate set is expected rather than surprising.
+
+At the measured fractions it is a large effect, so here it is in numbers rather
+than in the abstract. A1 carries 38,174 sites, 23,164 of them neutral (60.7%);
+keeping 0.306 of those leaves ~22,100 sites, a **42% cut in site count** for a
+50% cut in pi, and moves the selected share from 39% to **68%**. E1 goes from
+1,366 sites (925 neutral, 67.7%) to ~710, with the selected share moving from
+32% to **62%**. Both arms are therefore majority-selected where their parents
+were majority-neutral. `stage2_params.txt` records
+`thin_sites_before` / `thin_sites_after` / `thin_neutral_sites_before` /
+`thin_neutral_sites_kept` / `thin_pi_before` / `thin_pi_after` / `thin_pi_ratio`
+per replicate, so the realized numbers are always beside the outputs.
+
+### Where they run
+
+They are new **categories**, not new **arms**: both parameter sets are existing
+rows of `helpers/round3_arms.tsv` that already hold A1-A5 and E1-E5, so that file,
+`fetch_round3_2Mb.sh` and the notebook's `parse_arm()` need no changes.
+
+```bash
+# cmaf 0.001 / fm 0.001 / GLM 0.001, g5t20   -> cmaf001_fm001_g5t20_2Mb
+REPS="O1 O2 O3 O4 O5 P1 P2 P3 P4 P5" CELL=g5t20 \
+    bash submit_2Mb_r3_cmaf_fm001.sh
+
+# power-weighted n=100000, no plateau        -> cmaf0_fm001_g5t20_psamp100000_2Mb
+REPS="O1 O2 O3 O4 O5 P1 P2 P3 P4 P5" CELL=g5t20 SAMPLING_N=100000 \
+    PLATEAU=1 CAUSAL_FLOOR=0 FM_FLOOR=0.001 GLM_FLOOR=0.001 \
+    bash submit_2Mb_r3_x20_psamp_fm001.sh
+```
+
+The pool guard on the psamp arm behaves identically to A's and E's, incidentally
+-- it counts central `selco != 0` variants clearing power 0.05, and thinning does
+not touch them.
+
+## Category J: the African-ancestry arm
+
+J is category A with one parameter changed. stdpopsim's `HomSap` /
+`OutOfAfrica_2T12` (Tennessen et al. 2012) has two populations and simulates
+**both** forward regardless of which is sampled; every human arm through I took
+`{"AFR": 0, "EUR": n}` and J takes `{"AFR": n, "EUR": 0}`. Same SLiM run, same
+DFE, same recombination and mutation rates, same sample size, same trait
+architecture, same stages 2-5, same cost. Only the retained individuals differ.
+
+That makes A − J the ancestry contrast and nothing else. It sits alongside the
+other single-parameter contrasts the category axis is built out of: B − A
+isolates the effect assignment, H − A the genealogy, H − I the demography, and
+J − A the LD and allele-frequency structure that colocalization power is
+actually a function of. The EUR branch carries the out-of-Africa bottleneck, so
+J should show more diversity, more common variation and shorter-range LD.
+
+Two things to be precise about:
+
+* This is the African **branch of a two-population model**, not an isolated
+  African population — 2T12 has migration between AFR and EUR. `Africa_1T12`
+  would be the isolated model, and would make the *model* differ from A rather
+  than only the sampling.
+* J's stage-1 tree sequence is `hts_AFR_{seed}.ts`, not `hts_{seed}.ts`.
+  Stage-1 adoption matches on filename plus embedded seed, and a J run is
+  otherwise indistinguishable from an A run, so the population is in the name
+  for the same reason `nts_`/`cnts_` exist. EUR keeps the bare `hts_{seed}.ts`
+  so every tree sequence written before the key existed stays adoptable. The
+  key is `population:` (helpers/human_demography.py); it is read only by the
+  `human` pipeline and the Snakefile refuses it anywhere else rather than
+  ignoring it.
 
 ## The neutral models: B, H and I
 
@@ -815,10 +1160,22 @@ last. Each run gets its own flat publishdir
 scratch workdir, so the 22 runs never collide and existing in-flight
 controllers (e.g. `snakemake/cattle_sel_bot/`) keep running undisturbed.
 
-Seeds encode the run identity: tens digit = letter (A=1, B=2, …, G=7, H=8,
-I=9), ones digit = replicate. So A1 → 11; D1 → 41; F2 → 62; G4 → 74; H1 → 81;
-I1 → 91. **I is the last letter this rule has room for** — a tenth category
-would need a two-digit tens component and the invariant would break.
+Seeds encode the run identity:
+
+    seed = 10 * letter_index + replicate
+    (A=1, B=2, …, I=9, J=10, K=11, L=12, M=13, N=14)
+
+So A1 → 11; D1 → 41; F2 → 62; G4 → 74; H1 → 81; I1 → 91; **J1 → 101**;
+K1 → 111; L1 → 121; M1 → 131; N1 → 141. Through
+I this reads off as "tens digit = letter, ones digit = replicate", and that
+shorthand is what stops working at J — the arithmetic does not. J's band is
+101–109, which is disjoint from the 11–99 above it; K is 111–119, L 121–129,
+M 131–139 and N 141–149, and the rule keeps producing disjoint bands
+indefinitely.
+
+(The `seed_of()` implementations concatenate rather than add, so the two agree
+for one-digit replicates — which is every replicate that has ever been run —
+and diverge at replicate 10. Nothing has ever gone past 5.)
 
 ```bash
 ssh o2.hms.harvard.edu << 'EOF'

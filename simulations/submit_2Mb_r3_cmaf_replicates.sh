@@ -44,9 +44,15 @@
 #   E{N} -> 5{N}   cattle baseline from midpoint
 #   F{N} -> 6{N}   cattle + positive selection, WITH continued bottlenecking
 #   G{N} -> 7{N}   cattle + positive selection, WITHOUT it
+#   J{N} -> 10{N}  human, AFRICAN ancestry -- A's config with population: AFR
+#   M{N} -> 13{N}  human, FINNISH founder demography (Wang 2014, FIN deme)
+#   N{N} -> 14{N}  human, NON-FINNISH European (same model, NFE deme)
 # F and G have no round-3 tree sequences at all, so stage 1 runs for them here
 # exactly as it does for a new A/E replicate. Both load the same shared ep7
-# handoff that E does, which the pre-flight now checks for all three.
+# handoff that E does, which the pre-flight now checks for all three. J also
+# runs its own stage 1: it is the `human` pipeline sampling the other branch of
+# OutOfAfrica_2T12, so its tree sequence is hts_AFR_{seed}.ts and there is no
+# EUR predecessor that could stand in for it.
 #
 # Run from a login node:
 #   bash submit_2Mb_r3_cmaf_replicates.sh
@@ -78,15 +84,22 @@ CTRL_TIME="${CTRL_TIME:-1-00:00:00}"
 OUT_SCRATCH="$SCRATCH/simulations_round_3_2Mb_${CELL}_cmaf_${FLOOR}"
 OUT_PUBLISH="$PUBLISH/simulations_round_3_2Mb_${CELL}_cmaf_${FLOOR}"
 
-# Seed convention is fixed by the configs' own header comments:
-#   A{N} -> 1{N}   (A1=11 ... A10=20)
-#   B{N} -> 2{N}   (B1=21 ... B10=30)
-#   E{N} -> 5{N}   (E1=51 ... E10=60)
-#   F{N} -> 6{N}   (F1=61 ... F10=70)
-#   G{N} -> 7{N}   (G1=71 ... G10=80)
-#   H{N} -> 8{N}   (H1=81 ... H10=90)
-#   I{N} -> 9{N}   (I1=91 ... I9=99; I is the last letter the
-#                   tens-digit rule has room for)
+# Seed convention is fixed by the configs' own header comments. The rule is
+#   seed = 10 * letter_index + replicate      (A=1, B=2, ... I=9, J=10)
+# which for one-digit replicates reads off as the letter's band:
+#   A{N} -> 1{N}    (A1=11 ... A9=19)
+#   B{N} -> 2{N}    (B1=21 ... B9=29)
+#   E{N} -> 5{N}    (E1=51 ... E9=59)
+#   F{N} -> 6{N}    (F1=61 ... F9=69)
+#   G{N} -> 7{N}    (G1=71 ... G9=79)
+#   H{N} -> 8{N}    (H1=81 ... H9=89)
+#   I{N} -> 9{N}    (I1=91 ... I9=99)
+#   J{N} -> 10{N}   (J1=101 ... J9=109)
+#   M{N} -> 13{N}   (M1=131 ... M9=139)
+#   N{N} -> 14{N}   (N1=141 ... N9=149)
+# J is where the "read it off the tens digit" shorthand stops working -- the
+# arithmetic does not, and 101-109 cannot collide with the 11-99 above it. K
+# would be 111-119, and so on.
 # Deriving it rather than hard-coding a table keeps it from drifting.
 seed_of() {
     local id="$1" letter="${1:0:1}" n="${1:1}"
@@ -97,6 +110,8 @@ seed_of() {
         F) echo "6${n}" ;;
         G) echo "7${n}" ;;
         H) echo "8${n}" ;; I) echo "9${n}" ;;
+        J) echo "10${n}" ;;
+        M) echo "13${n}" ;; N) echo "14${n}" ;;
         *) echo "ERROR: no seed convention for '$id'" >&2; return 1 ;;
     esac
 }
@@ -113,9 +128,22 @@ seed_of() {
 # I also needs no cattle_baseline_search_dirs: unlike E/F/G it simulates all
 # twelve epochs itself instead of resuming from the shared ep7 checkpoint, which
 # is why the pre-flight handoff guard below stays scoped to ^(E|F|G)$.
+#
+# M and N are the FINNISH FOUNDER PAIR, and unlike B/K/L they need real config
+# files: `demographic_model: FinnishWang2014` selects a demes graph that is not
+# in stdpopsim's catalog, and it forces `Q_scaling: 3` because stdpopsim's SLiM
+# engine will not sample 9,000 individuals out of a FIN deme that holds 2,266 at
+# Q=10 or 7,491 at Q=4. At Q=3 it holds 9,988 -- a margin of 988. M samples FIN, N samples NFE, and the two files are otherwise identical:
+#   M - N  isolates the Finnish founder event
+#   N - A  isolates the model swap (Wang NFE vs Tennessen EUR)
+# Only the g5t20 cell exists so far; any other CELL fails the pre-flight
+# `[[ -f "$REPO/$CFG" ]]` check, which is the intended way to find that out.
 config_of() {
     case "${1:0:1}" in
         A|B) echo "config/human_2Mb_${CELL}_r3.yaml" ;;
+        J)   echo "config/human_afr_2Mb_${CELL}_r3.yaml" ;;
+        M)   echo "config/human_fin_2Mb_${CELL}_r3.yaml" ;;
+        N)   echo "config/human_nfe_2Mb_${CELL}_r3.yaml" ;;
         H)   echo "config/human_neutral_2Mb_${CELL}_r3.yaml" ;;
         I)   echo "config/cattle_neutral_2Mb_${CELL}_r3.yaml" ;;
         E)   echo "config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml" ;;

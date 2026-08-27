@@ -11,6 +11,9 @@ dependencies:
   - msprime
   - tstrait
   - stdpopsim
+  # Arrives transitively with stdpopsim, but human_simulation_o2.py
+  # imports it directly to load demography/*.yaml -- declare it.
+  - demes
   - hail
   - pandas
   - numpy

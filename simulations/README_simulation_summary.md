@@ -1,4 +1,16 @@
-# List of simulations
+# List of simulations — SUPERSEDED, DO NOT USE
+
+> **This file records a dead category scheme.** It is the round-1 A–Q lettering,
+> in which the letters mean different simulations than they do today: here `D`
+> is a neutral human arm, `I` is the cattle baseline, and **`J` is a cattle
+> run** — whereas in the live scheme `D` is a 100k-GWAS human arm, `I` is
+> neutral cattle and `J` is human African-ancestry.
+>
+> The authoritative table is "List of simulations" in `README_snakemake.md`.
+> Nothing in the pipeline reads this file; it is kept only so old notes and
+> figures that use the round-1 letters can still be decoded.
+
+# List of simulations (round 1, historical)
 
 | Population | GWAS size | GTEx size       | Selection on trait associated variants | Bottlenecking  | ID |
 | ---------- | --------- | --------------- | -------------------------------------- | -------------  | -- |

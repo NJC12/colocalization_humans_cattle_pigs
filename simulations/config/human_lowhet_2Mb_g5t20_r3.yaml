@@ -1,0 +1,128 @@
+# Human LOW-HETEROZYGOSITY simulation, 2 Mb region -- G5T20 cell. CATEGORY O.
+# ROUND 3.
+#
+# Category O is category A with HALF the nucleotide diversity and nothing else
+# changed. It is the missing cell on the category axis: H - A isolates the
+# genealogy, B - A the effect assignment, J - A the ancestry, and O - A isolates
+# how much neutral variation the genome carries, which is what sets LD-tagging
+# density, the size of the DAP-G candidate set and therefore fine-mapping
+# difficulty.
+#
+# HOW. Stage 2 deletes a seeded random fraction of the selco == 0 sites
+# (`neutral_keep_fraction`, helpers/neutral_thinning.py). Neutral mutations are a
+# Poisson overlay on branches the forward run already fixed -- 8.4e-9 in
+# human_simulation_o2.py, applied in STAGE 1 -- so thinning them is not an
+# approximation of a lower mutation rate, it has exactly that distribution. Only
+# selco == 0 sites are touched, and every causal predicate in stage 2
+# (causal_eligible, flank_eligible, select_central_power, select_gtex_topup)
+# selects on selco != 0, so the causal pool, the drawn positions, the effect sizes
+# and the trait-partner tables are IDENTICAL to A's.
+#
+# THE SEEDS ARE A'S, DELIBERATELY. Every other category has its own seed band
+# (B=2N, H=8N, J=10N, K=11N, M=13N ...). O does not: O{N} runs at seed 1{N}, the
+# same seed as A{N}, and adopts A{N}'s hts_1{N}.ts via stage1_search_dirs. That
+# is the whole point -- O1's variant set is a strict SUBSET of A1's, drawn from
+# the same genealogy with the same individuals in the same panels, so A - O
+# carries no replicate noise at all. helpers/tests/test_lowhet_categories.py
+# asserts the shared seed so it cannot be "corrected" back to a private band.
+# It also means O must NEVER run its own stage 1: submit_2Mb_r3_cmaf_replicates.sh
+# has no O entry for exactly that reason.
+#
+# THE KEEP FRACTION IS MEASURED, NOT CHOSEN. pi is additive over sites, so
+#     E[pi(k)] = k * pi_neutral + pi_selected
+# and halving pi means k = 0.5 * (1 - pi_selected / pi_neutral). Run
+# helpers/measure_pi_components.py over A1-A5's stage-1 tree sequences and take
+# the mean; the per-replicate table is committed as
+# helpers/pi_components_lowhet.tsv.
+#
+# WHAT THIS COSTS IN COMPOSITION, and it must be quoted alongside any O - A
+# number: halving pi removes MORE than half the neutral sites (pi is dominated by
+# the neutral class, which is also the common half of the frequency spectrum), so
+# total site count falls by more than the pi target and the selected:neutral
+# ratio shifts toward selected. O is therefore enriched for rare, low-MAF
+# selected variants relative to A. That is a consequence of the target, not a
+# defect, but it is not "A with fewer markers" in every respect.
+#
+# Per-replicate config: override stage1_seed, stage2_seed, stage1_search_dirs,
+# workdir, publishdir on the command line (O{N} -> seed 1{N}: O1=11 ... O5=15).
+
+pipeline: human
+species: human
+basename: human_lowhet
+species_prefix: h
+
+# ---- Demography parameters ----
+Q_scaling: 10
+# Round-2 value: the flat map stdpopsim's get_contig(length=L) returned for
+# HomSap when no rate was passed. The cattle arm ran at 9.26e-9, so the two arms
+# differed in recombination as well as demography. Round-3 configs use 1.3e-8.
+# Round 3: one rate, pinned in both arms and in both the msprime and SLiM
+# stages. Round 2 ran 1.3e-8 (cattle msprime), 9.26e-9 (cattle SLiM) and
+# 1.282e-8 (human, implicit from stdpopsim).
+recombination_rate: 1.3e-8
+L: 2000000
+dapg_window: 250000
+gwas_h2: 0.01
+gtex_h2: 0.4
+
+# ---- Sample sizes ----
+gwas_scaling: 5       # g5t20 cell (x35 run uses 35)
+gtex_scaling: 20       # g5t20 cell (x35 run uses 35)
+min_maf: 0.01
+# Pinned, not defaulted. causal_min_maf now defaults to 0 (no floor) and applies
+# in both causal_sampling schemes; 0.01 is what this config's arm actually ran
+# under, and it is also the one value that emits no path segment, so existing
+# stage-2..5 outputs stay adoptable. See helpers/paths.py:LEGACY_CAUSAL_MIN_MAF.
+causal_min_maf: 0.01
+gwas_size: 8000
+gtex_size: -1          # fan out GTEx to 1000 + 500 (250 written but not analyzed)
+neutral_trait_vars: False   # category A; B overrides this to True via --config
+
+# ---- Category O: the one key that differs from A ----
+# Fraction of selco == 0 sites kept. MEASURED, not chosen -- see the header.
+# In params_record.STAGE2_KEYS and in paths.stage2_run_tag (as `.nkeep_<tok>`),
+# so this arm can neither adopt A's stage 2 nor be written on top of it.
+# MEASURED 2026-08-27 over A1-A5 (job 51523508, helpers/pi_components_lowhet.tsv):
+# the selected class carries a mean 0.2794 of A's pi, so
+#   k = 0.5 * (1 - 0.2794/0.7206) = 0.306
+# Per-replicate k spans 0.2991-0.3163 (sd 0.0074); at the pinned 0.306 the
+# EXPECTED pi ratio lands between 0.4924 and 0.5049 across A1-A5. That is an
+# expectation: the deletion is a random subset, so the realized ratio
+# scatters around it (the pilot measured 0.508). Read thin_pi_ratio in
+# each replicate's stage2_params.txt for what actually happened.
+# Re-measure with `bash calibrate_lowhet.sh` if the donors ever change.
+neutral_keep_fraction: 0.306
+
+# ---- Trait loci ----
+# 50 GWAS traits (central causal loci) = the 50 shared GTEx traits; plus 50
+# GTEx-only loci drawn from the 500 kb edge flanks -> 100 GTEx traits total.
+n_central_traits: 50
+n_flank_gtex_traits: 50
+
+# ---- Per-stage seeds (stage1_seed/stage2_seed overridden per replicate) ----
+stage1_seed: 11
+stage2_seed: 11
+stage3_seed: 1
+stage4_seed: 1
+stage5_seed: 1
+
+# ---- Search dirs ----
+# stage1_search_dirs is supplied per-replicate on the CLI (points at the
+# round-3 x35 stage1 dir so stage 1 is reused, not rerun). Leave empty here.
+stage1_search_dirs: []
+stage2_search_dirs: []
+
+# ---- Stage 3/4 specifics ----
+ld_ctrl: 0.75
+fastenloc_total_snps: auto
+already_includes_neutral: True
+
+# ---- Workdir / publish (per-replicate; override via --config) ----
+workdir: /n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb_g5t20/human_lowhet
+publishdir: /n/data2/hms/dbmi/sunyaev/lab/nconnally/snakemake/simulations_round_3_2Mb_g5t20/human_lowhet
+
+# ---- Round-3 additions ----
+# Fixed colocalization prior (p1=p2=1e-4, p12=1e-5). The estimated prior depends
+# on -total_variants, which under `auto` differed ~39x between the arms, so RCPs
+# were not on a common scale. Writes 3 .enloc.*.out files, not 5.
+fastenloc_prior: coloc_default

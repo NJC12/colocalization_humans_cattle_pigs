@@ -1,0 +1,34 @@
+# Round-3 2 Mb arms: the ONE mapping between the two naming schemes.
+#
+#   column 1  arm name used in simulation_data/ and in the archive on /n/data2
+#   column 2  workdir suffix on O2 scratch (simulations_round_3_2Mb_<suffix>)
+#   column 3  human-readable description of the experimental condition
+#
+# The two names encode the same settings in different dialects and NEITHER can be
+# derived from the other mechanically:
+#
+#   local   cmaf<digits> / fm<digits>   digits after an implied "0." -- so cmaf01
+#           is 0.01, cmaf001 is 0.001, cmaf0 is 0. This is what
+#           figures_and_tables/figure2_revision2.ipynb:parse_arm() reads.
+#   O2      cmaf_<value> / fm_<value>   the literal value, and the `_fm_<value>`
+#           half is OMITTED on arms that predate the separate fine-mapping floor.
+#
+# So `cmaf001_fm01_g5t20_2Mb` <-> `g5t20_cmaf_0.001`: same arm, and the fm floor is
+# stated on one side and implied on the other. Getting this wrong silently pairs
+# two different experimental conditions, which is why it lives in one file that
+# both fetch_round3_2Mb.sh and archive_round3_to_data2.sh read.
+#
+# Tab-separated. Lines starting with # and blank lines are ignored.
+
+cmaf01_fm01_g5t20_2Mb	g5t20_cmaf_0.01_fm_0.01	causal 0.01, fine-map 0.01, GLM 0.01; gwas x5 / gtex x20
+cmaf01_fm01_g10t20_2Mb	g10t20_cmaf_0.01_fm_0.01	causal 0.01, fine-map 0.01, GLM 0.01; gwas x10 / gtex x20
+cmaf01_fm01_g5t30_2Mb	g5t30_cmaf_0.01_fm_0.01	causal 0.01, fine-map 0.01, GLM 0.01; gwas x5 / gtex x30
+cmaf001_fm01_g5t20_2Mb	g5t20_cmaf_0.001	causal 0.001, fine-map 0.01, GLM 0.01; gwas x5 / gtex x20
+cmaf001_fm001_g5t20_2Mb	g5t20_cmaf_0.001_fm_0.001	causal 0.001, fine-map 0.001, GLM 0.001; gwas x5 / gtex x20
+cmaf0_fm01_g5t20_2Mb	g5t20_cmaf_0	causal 0 (no floor), fine-map 0.01, GLM 0.01; gwas x5 / gtex x20
+cmaf0_fm001_10x_psamp8000_2Mb	x10_psamp_8000_fm_0.001	causal 0, fine-map 0.001; power-sampled causal set (n=8000); x10
+cmaf0_fm001_20x_psamp8000_2Mb	x20_psamp_8000_fm_0.001	causal 0, fine-map 0.001; power-sampled causal set (n=8000); x20
+cmaf0_fm001_30x_psamp8000_2Mb	x30_psamp_8000_fm_0.001	causal 0, fine-map 0.001; power-sampled causal set (n=8000); x30
+cmaf0_fm001_g5t20_psamp100000_2Mb	g5t20_psamp_100000_fm_0.001	causal 0, fine-map 0.001; power-sampled causal set (n=100000, no plateau); gwas x5 / gtex x20
+cmaf0_fm001_g5t20_psamp50000sat05_2Mb	g5t20_psamp_50000_sat_0.5_fm_0.001	causal 0, fine-map 0.001; SATURATING power-sampled causal set (n=50000, weight=min(power,0.5)); gwas x5 / gtex x20
+cmaf0_fm001_g5t20_psamp100000_ntr25_2Mb	g5t20_psamp_100000_ntr_25_fm_0.001	causal 0, fine-map 0.001; power-sampled (n=100000, no plateau); 25 central + 25 flank trait loci; gwas x5 / gtex x20

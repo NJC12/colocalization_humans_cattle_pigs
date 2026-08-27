@@ -52,6 +52,12 @@ weighted by the probability of detection" means when stated precisely, and it is
 what makes the resulting causal set interpretable as a sample from the
 detection-weighted distribution.
 
+`saturated_weights` is an optional transform applied to the weights BEFORE they
+reach `inclusion_probabilities`: it replaces power with min(power, plateau), so a
+variant that is already going to be found stops gaining representation from being
+found more surely. Read its docstring for why that is a different thing from the
+cap discussed next.
+
 The cap matters and is not a technicality.  With 50 draws from a pool where 40
 variants have power ~1, a raw proportional rule would ask for pi > 1 on those 40;
 the standard iterative fix pins them at 1 (they are certainties) and redistributes
@@ -116,6 +122,47 @@ def detection_power(maf, beta, n, sig_p):
     if np.any(nz):
         power[nz] = stats.ncx2.sf(thr, df=1, nc=ncp[nz])
     return power if ncp.ndim else float(power)
+
+
+NO_PLATEAU = 1.0
+"""``sampling_power_plateau`` value that leaves the weights untouched."""
+
+
+def saturated_weights(power, plateau=NO_PLATEAU):
+    """``min(power, plateau)`` -- the SATURATING variant of the weight.
+
+    NOT the same thing as "the cap" elsewhere in this module. That one is the
+    pi <= 1 clamp inside `inclusion_probabilities`, which is a mathematical
+    necessity (an inclusion probability cannot exceed 1). This one is a
+    MODELLING choice about the weight, applied before that function ever sees
+    the numbers.
+
+    What it says: past `plateau`, a real study finds the variant regardless, so
+    further power should not buy further representation in the causal set. The
+    raw proportional rule disagrees -- it makes a power-0.99 variant 1.24x more
+    likely to be drawn than a power-0.80 one, when in a real analysis both are
+    simply found. Below the plateau nothing changes: `inclusion_probabilities`
+    is scale-invariant, so pi stays proportional to power there.
+
+    `plateau = 1.0` (the default) is a no-op: power is already bounded by 1, so
+    every arm that predates this knob draws exactly what it drew before.
+
+    The plateau deliberately does NOT feed the pool-eligibility guard in
+    `create_gwas_files_and_phenotypes.select_central_power`. That guard asks "is
+    this pool detectable at all", which is a question about raw power; flattening
+    the top of the distribution first would let a pool of near-certainties look
+    the same as a pool of marginal variants.
+    """
+    plateau = float(plateau)
+    if not (0.0 < plateau <= 1.0):
+        raise ValueError(
+            f"sampling_power_plateau must lie in (0, 1], got {plateau!r} "
+            "(1.0 means no plateau)"
+        )
+    w = np.asarray(power, dtype=float)
+    if not np.all(np.isfinite(w)) or np.any(w < 0.0):
+        raise ValueError("power must be finite and non-negative")
+    return np.minimum(w, plateau)
 
 
 def inclusion_probabilities(weights, n):

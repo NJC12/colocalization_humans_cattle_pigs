@@ -1,0 +1,84 @@
+# Loaded by helpers/human_demography.py (MODELS['FinnishWang2014']), which is
+# the only reference to this path. Categories M (FIN) and N (NFE) run it.
+# Wang, Agarwala, Flannick, Chiang, Altshuler & Hirschhorn (2014)
+# Am J Hum Genet 94:710-720, doi:10.1016/j.ajhg.2014.03.019
+# NFE + Finnish founder model: Figure 1 and Table S2, class 3 model
+# (the one the authors adopted; minimal -log P(data|model) = 267).
+#
+# Generation time is 25 years: Table S2 puts the Finnish bottleneck at 2.5 ky
+# ago and Figure 1 puts it at 100 generations ago.
+#
+# All epoch boundaries and sizes below follow from the paper EXCEPT the three
+# values marked CHOSEN. Table S2 reports those three as ranges rather than
+# point estimates, so you must pick within the range -- see notes at the bottom.
+
+description: NFE plus Finnish founder population (Wang et al. 2014, Table S2 class 3)
+doi:
+  - 10.1016/j.ajhg.2014.03.019
+time_units: generations
+
+demes:
+
+  - name: NFE
+    description: Non-Finnish Europeans
+    epochs:
+      # Fig. 1: 45,000 generations of constant size at N = 8,100. In demes the
+      # root epoch is infinite; the 45,000 figure is their burn-in length, so
+      # pass it to the engine (stdpopsim --slim-burn-in) rather than encoding it.
+      - end_time: 270
+        start_size: 8100
+
+      # Fig. 1: instantaneous bottleneck to N = 2,000, then 270 generations of
+      # exponential growth at 1.5%/generation. 2000 * 1.015^270 = 111,394.
+      - end_time: 0
+        start_size: 2000
+        end_size: 111394
+
+  - name: FIN
+    description: Finnish founder population
+    ancestors: [NFE]
+    start_time: 100          # Fig. 1: founding event 100 generations (2.5 ky) ago
+    epochs:
+      # Fig. 1: slow growth phase, 87 generations, 0.5-5%/generation.
+      - end_time: 13
+        start_size: 1000     # Table S2: bottleneck size 1,000
+        end_size: 5600       # CHOSEN: 1000 * 1.02^87, i.e. 2%/generation
+
+      # Fig. 1: fast growth phase, 13 generations, 8-30%/generation.
+      - end_time: 0
+        start_size: 5600
+        end_size: 34458      # CHOSEN: 5600 * 1.15^13, i.e. 15%/generation
+
+migrations:
+  # Table S2 class 3: gene flow from NFEs into Finns, 0.5-7%. One-directional.
+  # demes rate = fraction of `dest` replaced by migrants from `source` per
+  # generation, forwards in time.
+  - source: NFE
+    dest: FIN
+    rate: 0.02               # CHOSEN: mid-range of the 0.5-7% reported
+    start_time: 100
+    end_time: 0
+
+# ---------------------------------------------------------------------------
+# NOTES ON THE THREE CHOSEN VALUES
+#
+# The reported ranges leave the present-day Finnish Ne very loosely determined:
+#   slow 0.5% + fast  8%  ->  Ne ~     4,200
+#   slow 2.0% + fast 15%  ->  Ne ~    34,500   (used here)
+#   slow 5.0% + fast 30%  ->  Ne ~ 2,112,000
+# The top of that range is computationally brutal in a forward simulation, so
+# treat the growth rates as a sensitivity axis, not a fixed input: run the
+# corners as well as the midpoint if the result matters.
+#
+# ONE AMBIGUITY IN FIGURE 1: the 270-generation bracket is read here as
+# spanning bottleneck -> present, which matches the four-parameter model's
+# "duration of exponential growth in generations" ending at the present day.
+# If instead it spans bottleneck -> Finnish founding event, change the NFE
+# second epoch to end_time: 100 with end_size: 111394 and add a third constant
+# epoch (end_time: 0, start_size and end_size both 111394).
+#
+# OTHER PARAMETERS FROM THE PAPER, for the contig rather than this file:
+#   mutation rate      2e-8 per site per generation
+#   recombination rate 2 Mb/cM, i.e. 5e-9 per bp per generation
+#   average gene coding length 1,500 bp
+# ---------------------------------------------------------------------------
