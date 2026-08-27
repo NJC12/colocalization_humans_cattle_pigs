@@ -115,11 +115,18 @@ for ID in $IDS; do
     # stage1_search_dirs=[] is the whole point: BUILD it, do not adopt it.
     # Trait counts and floors are irrelevant to stage 1 and are left at the
     # config's own values so nothing about the comparison depends on the arm.
+    # --unlock first: a re-launch (or a launch interrupted partway through this
+    # loop, which is easy over a slow ssh) otherwise dies with LockException
+    # against its own predecessor's stale lock.
     JID=$(sbatch --parsable \
         --job-name="verify_stage1_$ID" \
         --partition=short --time=8:00:00 --mem=16G --cpus-per-task=4 \
         --output="$WD/verify_%j.out" --error="$WD/verify_%j.err" \
         --wrap="cd '$WD' && '$SNAKEMAKE' --snakefile '$REPO/Snakefile' \
+            --configfile '$REPO/$CFG' --unlock \
+            --config stage1_seed=$SEED stage2_seed=$SEED workdir='$WD' \
+                     publishdir='$WD' stage1_search_dirs=[] || true; \
+            '$SNAKEMAKE' --snakefile '$REPO/Snakefile' \
             --configfile '$REPO/$CFG' --profile '$REPO/profiles/o2' \
             --rerun-triggers mtime -j 4 --until stage1 \
             --config stage1_seed=$SEED stage2_seed=$SEED workdir='$WD' \

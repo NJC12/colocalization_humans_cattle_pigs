@@ -178,7 +178,10 @@ DEMOGRAPHY = {"A": "human", "B": "human", "C": "human", "D": "human",
               # variation. A - O and E - P isolate variant density.
               "O": "human", "P": "cattle"}
 
-COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
+COLUMNS = [# "NA" for every root without a RUNS.tsv, i.e. everything written
+           # before the publication tree.
+           "arm",
+           "sim_category", "demography", "gtex_n", "replicates",
            "causal_min_maf", "n_gwas_traits", "n_causal_tested",
            "n_gwas_cpip_tested", "n_gtex_cpip_tested",
            "fm_filtered", "fm_r2", "params_source", "gwas_mult", "gtex_mult",
@@ -610,14 +613,60 @@ def _new_row():
                 gw_cs_all=[], gw_cs_caus=[], gt_cs_all=[], gt_cs_caus=[])
 
 
+def runs_from_manifest(root):
+    """[(rep_dir, letter, arm)] from RUNS.tsv, or None when there is no manifest.
+
+    The publication tree names its runs interpretably --
+    `human_background_selection_rep3`, not `K3` -- so the `[A-Z][0-9]*` glob below
+    finds nothing there and the species letter is not in the path at all. RUNS.tsv
+    carries both, plus the arm.
+
+    Looked for beside the root AND one level up, because the layout is arm-major
+    (`<publication root>/<arm>/<run>`) and `--roots` is normally given the arm
+    directories, not their parent.
+
+    Returns None rather than an empty list when absent, so the caller can tell
+    "no manifest here, use the glob" from "manifest says this root is empty".
+    """
+    for cand in (os.path.join(root, "RUNS.tsv"),
+                 os.path.join(os.path.dirname(os.path.abspath(root)), "RUNS.tsv")):
+        if not os.path.isfile(cand):
+            continue
+        out, header = [], None
+        with open(cand) as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                f = line.split("\t")
+                if header is None:
+                    header = {name: i for i, name in enumerate(f)}
+                    continue
+                row = {k: f[i] for k, i in header.items() if i < len(f)}
+                rep = os.path.join(root, row["run_dir"])
+                if not os.path.isdir(rep):
+                    # Rows for the other arms, or runs that have not landed yet.
+                    continue
+                out.append((rep, row.get("letter", "?"), row.get("arm")))
+        if out:
+            return sorted(out)
+    return None
+
+
 def collect(root):
     rows = {}
-    # [A-Z], not [A-J]: the glob is the thing a new category is most likely to be
-    # missed by, and it fails by silently reporting nothing rather than erroring.
-    # A directory only matches if a digit follows the letter, so sibling dirs
-    # like OLD_r2_75/ and simulation_summaries/ are still excluded.
-    for rep in sorted(glob.glob(os.path.join(root, "[A-Z][0-9]*"))):
-        cat_letter = os.path.basename(rep)[0]
+    found = runs_from_manifest(root)
+    if found is None:
+        # [A-Z], not [A-J]: the glob is the thing a new category is most likely to be
+        # missed by, and it fails by silently reporting nothing rather than erroring.
+        # A directory only matches if a digit follows the letter, so sibling dirs
+        # like OLD_r2_75/ and simulation_summaries/ are still excluded.
+        #
+        # Every root written before the publication tree is discovered this way, so
+        # this stays load-bearing rather than becoming dead code.
+        found = [(rep, os.path.basename(rep)[0], None)
+                 for rep in sorted(glob.glob(os.path.join(root, "[A-Z][0-9]*")))]
+    for rep, cat_letter, arm in found:
         # EVERY stage-2 directory, not just the first. One workdir can legitimately
         # hold several -- a run that changed gwas/gtex scaling or the causal MAF
         # floor gets its own stage-2 dir and its own stage-3/4/5 subtree -- and
@@ -625,11 +674,11 @@ def collect(root):
         # directory glob happened to return first.
         for s2 in sorted(d for d in glob.glob(os.path.join(rep, "stage2", "*", "*"))
                          if os.path.isdir(d)):
-            _collect_one(rows, rep, cat_letter, s2)
+            _collect_one(rows, rep, cat_letter, s2, arm=arm)
     return rows
 
 
-def _collect_one(rows, rep, cat_letter, s2):
+def _collect_one(rows, rep, cat_letter, s2, arm=None):
     stage1 = os.path.basename(os.path.dirname(s2))
     # The maf_ component is the CAUSAL floor: it is the only one of the three MAF
     # knobs that changes what stage 2 produces, so it is what names the directory.
@@ -754,7 +803,7 @@ def _collect_one(rows, rep, cat_letter, s2):
             # each is constant across any pre-existing root and the grouping there
             # is unchanged.
             key = (cat_letter, gtex_n, gwas_mult, gtex_mult, causal_maf,
-                   fmf, ldc, source, draw)
+                   fmf, ldc, source, draw, arm)
             r = rows.setdefault(key, _new_row())
             r["reps"].add(os.path.basename(rep))
             return r
@@ -873,11 +922,11 @@ def main():
             allrows.items(),
             # category, then causal floor (descending, so the historical 0.01 sorts
             # first), then the fine-mapping settings, then panel size and multipliers.
-            key=lambda kv: (kv[0][0], -kv[0][4], bool(kv[0][5]),
+            key=lambda kv: (kv[0][9] or "", kv[0][0], -kv[0][4], bool(kv[0][5]),
                             kv[0][6] if kv[0][6] else 0, -kv[0][1],
                             kv[0][2], kv[0][3],
                             tuple(str(x) for x in kv[0][8]))):
-        cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source, draw = key
+        cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source, draw, arm = key
         sampling, samp_n, plateau, n_central, require_partner = draw
         hits = r["gwas_hits"]
         # (idx, thr) pairs in COLUMNS order: RCP at .5/.9 then LCP at .5/.9.
@@ -892,6 +941,7 @@ def main():
         # --fm-r2 CLI value is only a fallback when that metadata is gone.
         fm_r2 = a.fm_r2 if ldc is None else ldc
         vals = [
+            "NA" if arm is None else arm,
             cat, DEMOGRAPHY.get(cat, "?"), gtex_n, len(r["reps"]),
             causal_maf, r["n_gwas"], r["n_causal_tested"],
             len(r["gw_cpip"]), len(r["gt_cpip"]),
