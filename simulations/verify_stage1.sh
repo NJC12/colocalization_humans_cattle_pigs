@@ -37,6 +37,7 @@ source "$REPO/lib/publication_common.sh"
 
 SANDBOX="${SANDBOX:-/n/scratch/users/n/njc12/pubfreeze_sandbox/stage1_verify}"
 SNAKEMAKE="${SNAKEMAKE:-/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake}"
+PYTHON="${PYTHON:-/home/njc12/miniconda3/envs/coloc_sims/bin/python}"
 IDS="${IDS:-A1 E1 F1 G1}"
 REPORT="$SANDBOX/VERIFY_REPORT.tsv"
 
@@ -67,17 +68,26 @@ if [[ "${1:-}" == "--check" ]]; then
             printf "%s\t%s\tNO_REFERENCE\tnothing to compare against under %s\n" "$ID" "$FN" "$EXISTING_ROOTS" >> "$REPORT.tmp"
             ALLOK=0; continue
         fi
-        if cmp -s "$FRESH" "$REF"; then
-            printf "%s\t%s\tIDENTICAL\t%s\n" "$ID" "$FN" "$REF" >> "$REPORT.tmp"
+        # Content comparison, not `cmp`. A .trees file embeds a provenance
+        # record -- timestamp, software versions, resolved command line -- so two
+        # runs of identical code from identical seeds differ in BYTES while being
+        # the same simulation. Measured: a re-run E1 came out 24 bytes larger than
+        # the copy on disk, entirely in that record. `cmp` would have said "the
+        # code changed, re-run all 20", which is both costly and wrong.
+        VERDICT=$("$PYTHON" "$REPO/helpers/compare_tree_sequences.py" "$FRESH" "$REF" 2>&1 | tail -1)
+        STATUS=$(cut -f1 <<<"$VERDICT")
+        DETAIL=$(cut -f4 <<<"$VERDICT")
+        if [[ "$STATUS" == "SAME" ]]; then
+            printf "%s\t%s\tSAME\t%s (%s)\n" "$ID" "$FN" "$DETAIL" "$REF" >> "$REPORT.tmp"
         else
-            printf "%s\t%s\tDIFFERS\tfresh=%s bytes ref=%s bytes (%s)\n" "$ID" "$FN" \
-                "$(stat -c %s "$FRESH")" "$(stat -c %s "$REF")" "$REF" >> "$REPORT.tmp"
+            printf "%s\t%s\t%s\t%s (%s)\n" "$ID" "$FN" "${STATUS:-ERROR}" "${DETAIL:-$VERDICT}" "$REF" >> "$REPORT.tmp"
             ALLOK=0
         fi
         # cattle_sel also emits the m4 marks table, which stage 2 reads.
         for extra in "${FRESH%.full.ts}.m4_marks.tsv"; do
             [[ -f "$extra" ]] || continue
             EN=$(basename "$extra"); ER=$(find_existing "$EN")
+            # A plain TSV, so a byte comparison IS the content comparison here.
             if [[ -n "$ER" ]] && cmp -s "$extra" "$ER"; then
                 printf "%s\t%s\tIDENTICAL\t%s\n" "$ID" "$EN" "$ER" >> "$REPORT.tmp"
             else
@@ -91,10 +101,11 @@ if [[ "${1:-}" == "--check" ]]; then
     column -t -s$'\t' "$REPORT"
     echo
     if (( ALLOK )); then
-        echo "ALL IDENTICAL -- the existing tree sequences are what this tag produces."
-        echo "Reuse them. Report: $REPORT"
+        echo "ALL SAME -- the existing tree sequences are, genetically, what this tag"
+        echo "produces. Reuse them."
+        echo "Report: $REPORT"
     else
-        echo "NOT all identical. Do NOT reuse: re-run stage 1 for all 20 replicates" >&2
+        echo "NOT all the same. Do NOT reuse: re-run stage 1 for all 20 replicates" >&2
         echo "under the tag, or explain the difference first. Report: $REPORT" >&2
         exit 1
     fi
