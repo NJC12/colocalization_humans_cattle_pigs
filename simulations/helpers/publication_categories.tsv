@@ -1,0 +1,53 @@
+# Categories in the publication simulation set: the ONE table mapping the
+# internal category letter to everything that varies with it.
+#
+# The letters are the historical scheme (README_snakemake.md, "List of
+# simulations"). They are kept because they are the bridge to everything that
+# already reads them -- summarize_coloc.DEMOGRAPHY, the notebook's
+# CATEGORY_LABEL/color_key, the seed convention -- but they are NOT what the
+# published directories are named. `dir_name` is.
+#
+# Why a table rather than four copies of a bash `case`: the four round-3
+# launchers each carry their own copy of these tables and have already drifted
+# (only submit_2Mb_r3_cmaf_fm001.sh knows K and L; submit_2Mb_r3_cmaf01_control.sh
+# has no category_extra at all). helpers/tests/test_launcher_tables.py asserts
+# they agree where they overlap; this file is how the publication launcher avoids
+# becoming a fifth copy.
+#
+# Columns
+#   letter        internal category id
+#   dir_name      the published directory name
+#   species       human | cattle
+#   pipeline      which stage-1 rule file runs (config["pipeline"])
+#   config        config YAML, with ${CELL} interpolated by the launcher
+#   seed_prefix   stage1_seed / stage2_seed = <seed_prefix><replicate>. A category
+#                 with a donor MUST repeat the donor's prefix, and the launcher
+#                 refuses to run if it does not: stage-1 lookup is seed-strict, so
+#                 a mismatch would not adopt the donor's file, it would silently
+#                 start a fresh multi-hour genetic simulation instead.
+#   stage1_donor  the category whose stage-1 tree sequence this one ADOPTS, or
+#                 "self" to use its own. A donor means this category never runs
+#                 stage 1.
+#   extra_config  --config tokens that distinguish this category from the one its
+#                 config file belongs to. LOAD-BEARING for K and L: they use A's
+#                 and E's configs, and are only different simulations because of
+#                 this column. NO TOKEN MAY CONTAIN A SPACE (the launcher expands
+#                 it unquoted so each token becomes its own --config argument).
+#
+# Tab-separated. Lines starting with # and blank lines are ignored.
+#
+# K and L adopt A's and E's genomes deliberately, the way O<-A and P<-E already
+# do. K is A's genome with the causal loci drawn from the strictly NEUTRAL
+# variants and their effects drawn from the truncated DFE, so pairing them to the
+# same tree sequence at the same seed is what makes A-K isolate the effect
+# assignment with the genealogy held literally fixed. Run at their own seed bands
+# (11N/12N, as the preliminary K/L runs were) that contrast also carries
+# replicate noise.
+#
+letter	dir_name	species	pipeline	config	seed_prefix	stage1_donor	extra_config
+A	human_baseline_negative_selection	human	human	config/human_2Mb_${CELL}_r3.yaml	1	self	-
+E	cattle_baseline_negative_selection	cattle	cattle_baseline_from_midpoint	config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml	5	self	-
+K	human_background_selection	human	human	config/human_2Mb_${CELL}_r3.yaml	1	A	synthetic_dfe_effects=True
+L	cattle_background_selection	cattle	cattle_baseline_from_midpoint	config/cattle_baseline_from_midpoint_2Mb_${CELL}_r3.yaml	5	E	synthetic_dfe_effects=True
+F	cattle_positive_selection_bottlenecked	cattle	cattle_sel	config/cattle_sel_bottlenecked_2Mb_${CELL}_r3.yaml	6	self	-
+G	cattle_positive_selection_unbottlenecked	cattle	cattle_sel	config/cattle_sel_not_bottlenecked_2Mb_${CELL}_r3.yaml	7	self	-

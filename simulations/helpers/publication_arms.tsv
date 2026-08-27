@@ -1,0 +1,42 @@
+# Arms of the publication simulation set. One row per arm, one column per config
+# key, so this file IS the published ARMS.tsv and can be diffed mechanically
+# against any run's stage2_params.txt.
+#
+# An ARM is an analysis/parameter cell run across every category; a CATEGORY is a
+# genetic model run in every arm (helpers/publication_categories.tsv). The four
+# arms here differ in NOTHING except how the causal loci are chosen -- same
+# floors, same multipliers, same trait counts, same region, same seeds. That is
+# the point, and it is also why `require_gtex_partner` must reach the path:
+# without it arms 1 and 2 write byte-identical filenames.
+#
+#   causal_maf001_paired     the closest to every previous round-3 arm: a uniform
+#                            draw from the MAF >= 0.001 pool, intersected with the
+#                            GTEx panel so every GWAS locus has a partner.
+#   causal_maf001_unpaired   the same draw WITHOUT the intersection. Newly
+#                            expressible: the pairing used to be derived from the
+#                            sampling scheme.
+#   causal_power_n200000     loci weighted by their probability of detection in a
+#                            200,000-person GWAS -- "which loci would a large
+#                            study report?" -- without changing the simulated
+#                            8,000-person GWAS.
+#   causal_power_n8000       the same weighting at this run's own GWAS size.
+#
+# The two power arms drop the MAF floor (causal_min_maf 0): the detection-power
+# weight is already a preference over frequency and effect size jointly, so a
+# floor on top would confound the two. NOTE that this makes the power arms'
+# eligible pool a superset of the uniform arms', which is why they are read as a
+# different question, not as a stricter version of the same one.
+#
+# sampling_gwas_n is carried on the uniform arms too, at its RESOLVED value
+# (gwas_size, 8000). It has no effect there -- nothing computes a power weight
+# under a uniform draw -- but the Snakefile defaults it to gwas_size and
+# params_record hashes it into stage2_uid, so recording it keeps this file
+# column-for-column comparable with every run's params record.
+#
+# Tab-separated. Lines starting with # and blank lines are ignored.
+#
+arm	causal_min_maf	causal_sampling	sampling_gwas_n	sampling_sig_p	sampling_min_power	sampling_power_plateau	sampling_min_pool_multiple	require_gtex_partner	fm_min_maf	min_maf	gwas_scaling	gtex_scaling	n_central_traits	n_flank_gtex_traits	gtex_size	gwas_size	L	dapg_window	ld_ctrl	fastenloc_prior	params_strict	description
+causal_maf001_paired	0.001	uniform	8000	5e-8	0.05	1	2	True	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	uniform draw from the MAF>=0.001 pool; causal loci REQUIRED to segregate in both panels
+causal_maf001_unpaired	0.001	uniform	8000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	uniform draw from the MAF>=0.001 pool; causal loci NOT required in both panels
+causal_power_n200000	0	power	200000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	power-weighted draw (n=200000, no plateau), no MAF floor; not required in both panels
+causal_power_n8000	0	power	8000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	power-weighted draw (n=8000, no plateau), no MAF floor; not required in both panels
