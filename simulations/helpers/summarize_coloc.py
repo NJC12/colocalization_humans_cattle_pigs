@@ -182,6 +182,11 @@ COLUMNS = ["sim_category", "demography", "gtex_n", "replicates",
            "causal_min_maf", "n_gwas_traits", "n_causal_tested",
            "n_gwas_cpip_tested", "n_gtex_cpip_tested",
            "fm_filtered", "fm_r2", "params_source", "gwas_mult", "gtex_mult",
+           # How the causal set was drawn. Part of the grouping key: two arms
+           # that differ only here are different experiments, and pooling them
+           # halves nothing and doubles the denominator.
+           "causal_sampling", "sampling_gwas_n", "sampling_power_plateau",
+           "n_central_traits", "require_gtex_partner",
            # Raw COUNTS, not percentages. Denominators: power over
            # n_gwas_traits; the false-discovery rate over (pow + fp).
            "enloc_pow_rcp50", "enloc_fp_rcp50", "enloc_pow_rcp90", "enloc_fp_rcp90",
@@ -726,9 +731,30 @@ def _collect_one(rows, rep, cat_letter, s2):
                    else detect_fm_filtered(s2, os.path.join(s3root, gcat), gcat, fm_floor))
         fmf = gw_filt if gw_filt is not None else gt_filt
 
+        # How the causal set was drawn. Read from the params file only: these are
+        # not recoverable from a path (n_central_traits and require_gtex_partner
+        # appear in the run tag only when they differ from their legacy value, and
+        # the run tag is not parsed here anyway), so a run without a params record
+        # gets None for all of them and groups exactly as it did before.
+        _p = params or {}
+        draw = (_p.get("causal_sampling"), _p.get("sampling_gwas_n"),
+                _p.get("sampling_power_plateau"), _p.get("n_central_traits"),
+                _p.get("require_gtex_partner"))
+
         def row():
+            # `draw` is every stage-2 knob that decides WHICH loci become causal
+            # and is not already represented above. Without it, arms that differ
+            # only in how the causal set was drawn pool into one row with a
+            # doubled denominator -- silently, and looking like a well-powered
+            # result. The publication set has two such pairs: paired vs unpaired
+            # at identical floors (require_gtex_partner), and the two power arms
+            # at identical floors (sampling_gwas_n).
+            #
+            # Every element is None for a run whose params file predates it, so
+            # each is constant across any pre-existing root and the grouping there
+            # is unchanged.
             key = (cat_letter, gtex_n, gwas_mult, gtex_mult, causal_maf,
-                   fmf, ldc, source)
+                   fmf, ldc, source, draw)
             r = rows.setdefault(key, _new_row())
             r["reps"].add(os.path.basename(rep))
             return r
@@ -849,8 +875,10 @@ def main():
             # first), then the fine-mapping settings, then panel size and multipliers.
             key=lambda kv: (kv[0][0], -kv[0][4], bool(kv[0][5]),
                             kv[0][6] if kv[0][6] else 0, -kv[0][1],
-                            kv[0][2], kv[0][3])):
-        cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source = key
+                            kv[0][2], kv[0][3],
+                            tuple(str(x) for x in kv[0][8]))):
+        cat, gtex_n, gwm, gtm, causal_maf, fmf, ldc, source, draw = key
+        sampling, samp_n, plateau, n_central, require_partner = draw
         hits = r["gwas_hits"]
         # (idx, thr) pairs in COLUMNS order: RCP at .5/.9 then LCP at .5/.9.
         # Each column family tests its own metric only -- LCP >= RCP always, so
@@ -868,6 +896,8 @@ def main():
             causal_maf, r["n_gwas"], r["n_causal_tested"],
             len(r["gw_cpip"]), len(r["gt_cpip"]),
             fm_filtered, fm_r2, source, gwm, gtm,
+            *("NA" if x is None else x
+              for x in (sampling, samp_n, plateau, n_central, require_partner)),
             r50[0], r50[1], r90[0], r90[1], l50[0], l50[1], l90[0], l90[1],
             hit_med(hits, 0, 0.5), hit_med(hits, 0, 0.9),
             hit_med(hits, 1, 0.5), hit_med(hits, 1, 0.9),
@@ -882,6 +912,10 @@ def main():
             med(r["gw_cs_all"]), med(r["gw_cs_caus"]),
             med(r["gt_cs_all"]), med(r["gt_cs_caus"]),
         ]
+        # A row that is one field short or long is not an error anywhere -- it is
+        # a TSV whose columns have silently shifted from that row on.
+        assert len(vals) == len(COLUMNS), (
+            f"row has {len(vals)} values but COLUMNS declares {len(COLUMNS)}")
         print("\t".join(str(v) for v in vals), file=fh)
     if fh is not sys.stdout:
         fh.close()
