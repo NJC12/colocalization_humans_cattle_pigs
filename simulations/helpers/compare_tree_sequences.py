@@ -38,6 +38,16 @@ import tskit
 TABLES = ("individuals", "nodes", "edges", "sites", "mutations",
           "populations", "migrations")
 
+#: Columns that carry no information any downstream stage reads.
+#:
+#: `location` is SLiM's spatial coordinate array. The models here are
+#: non-spatial, so it is effectively uninitialised -- two runs of the SAME
+#: simulation at the same seed were measured to differ in 693 of 27,000 entries
+#: while their genotype matrices were identical. Reporting that as a difference
+#: without saying it is cosmetic is how a verification script gets ignored.
+COSMETIC_COLUMNS = frozenset({"location", "location_offset",
+                              "metadata", "metadata_offset"})
+
 
 def compare(path_a, path_b):
     """-> (same_ignoring_provenance, detail)"""
@@ -78,11 +88,42 @@ def compare(path_a, path_b):
                 same = getattr(A, col) == getattr(B, col)
             if not same:
                 cols.append(col)
-        meta_only = bool(cols) and all("metadata" in c for c in cols)
-        suffix = " (METADATA ONLY)" if meta_only else ""
+        cosmetic = bool(cols) and all(c in COSMETIC_COLUMNS for c in cols)
+        suffix = " (COSMETIC)" if cosmetic else ""
         details.append(f"{name}: {len(A)} rows, columns differ: "
                        f"{', '.join(cols) or 'unknown'}{suffix}")
+
+    # The operationally decisive comparison, computed only when something differs
+    # -- which is exactly when you need to know whether it MATTERS. Every
+    # downstream stage reads genotypes at positions; nothing reads an individual's
+    # spatial coordinates. Measured on two A1 runs at the same seed: the
+    # individuals table differed in `location` alone (693 of 27,000 entries) while
+    # the genotype matrix, the sample order and the individual->node mapping were
+    # all identical. Without this line that reads as "DIFFERENT" and costs an
+    # afternoon to interpret.
+    details.append(observable_verdict(a, b))
     return False, "; ".join(details)
+
+
+def observable_verdict(a, b):
+    """Whether the two differ in anything a downstream stage can see."""
+    try:
+        same_order = np.array_equal(a.samples(), b.samples())
+        same_sites = np.array_equal(a.tables.sites.position,
+                                    b.tables.sites.position)
+        if not (same_order and same_sites):
+            return ("OBSERVABLY DIFFERENT: "
+                    + ("sample order differs" if not same_order else "site positions differ"))
+        # num_samples x num_sites bytes; a 2 Mb human panel is ~700 MB, fine, but
+        # refuse rather than get OOM-killed on something much larger.
+        cells = a.num_samples * a.num_sites
+        if cells > 4_000_000_000:
+            return f"genotypes not compared ({cells:,} cells; too large)"
+        same_geno = np.array_equal(a.genotype_matrix(), b.genotype_matrix())
+        return ("genotypes IDENTICAL -- nothing a downstream stage reads differs"
+                if same_geno else "OBSERVABLY DIFFERENT: genotype matrices differ")
+    except Exception as e:                       # MemoryError, ragged tables
+        return f"genotypes not compared ({type(e).__name__})"
 
 
 def main(argv):
