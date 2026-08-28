@@ -26,7 +26,7 @@ a difference in `edges`/`nodes` means the genealogy did, which is the serious on
 
     python helpers/compare_tree_sequences.py A.ts B.ts [C.ts D.ts ...]
 
-Exit 0 only if every pair matches ignoring provenance.
+Exit 0 if every pair is SAME or COSMETIC; 1 if any is observably DIFFERENT.
 """
 
 import sys
@@ -50,23 +50,34 @@ COSMETIC_COLUMNS = frozenset({"location", "location_offset",
 
 
 def compare(path_a, path_b):
-    """-> (same_ignoring_provenance, detail)"""
+    """-> (verdict, detail), verdict in {"SAME", "COSMETIC", "DIFFERENT"}.
+
+    Three verdicts, not two, because the two-valued version made this script cry
+    wolf. Two runs of the same simulation at the same seed differ in
+    `individuals.location` -- SLiM's spatial coordinates, meaningless in a
+    non-spatial model -- and reporting that as DIFFERENT with a non-zero exit is
+    how a verification step gets routed around.
+
+    COSMETIC means: every differing column is in COSMETIC_COLUMNS, AND the sample
+    order, the site positions and the genotype matrix are all identical. It exits
+    0. Anything a downstream stage could read moves it to DIFFERENT.
+    """
     a = tskit.load(path_a)
     b = tskit.load(path_b)
 
     if a.sequence_length != b.sequence_length:
-        return False, (f"sequence_length {a.sequence_length} != {b.sequence_length}")
+        return "DIFFERENT", (f"sequence_length {a.sequence_length} != {b.sequence_length}")
 
     ta, tb = a.tables, b.tables
     if ta.equals(tb, ignore_provenance=True):
         byte_same = open(path_a, "rb").read() == open(path_b, "rb").read()
         note = "byte-identical" if byte_same else "differ only in provenance"
-        return True, note
+        return "SAME", note
 
     moved = [name for name in TABLES
              if getattr(ta, name) != getattr(tb, name)]
     if not moved:
-        return False, "no table differs -- top-level metadata or time_units"
+        return "DIFFERENT", "no table differs -- top-level metadata or time_units"
 
     # WHICH COLUMN, not just which table. A table can differ in its row count
     # (a genuinely different simulation) or in one column (often metadata that
@@ -74,10 +85,12 @@ def compare(path_a, path_b):
     # only the table name sent me to diagnose this by hand the first time an
     # `individuals` table differed at an identical row count.
     details = []
+    differing_columns = []
     for name in moved:
         A, B = getattr(ta, name), getattr(tb, name)
         if len(A) != len(B):
             details.append(f"{name}: {len(A)} vs {len(B)} rows")
+            differing_columns.append("__rowcount__")   # never cosmetic
             continue
         cols = []
         for col in A.column_names:
@@ -88,6 +101,7 @@ def compare(path_a, path_b):
                 same = getattr(A, col) == getattr(B, col)
             if not same:
                 cols.append(col)
+        differing_columns.extend(cols)
         cosmetic = bool(cols) and all(c in COSMETIC_COLUMNS for c in cols)
         suffix = " (COSMETIC)" if cosmetic else ""
         details.append(f"{name}: {len(A)} rows, columns differ: "
@@ -101,8 +115,12 @@ def compare(path_a, path_b):
     # the genotype matrix, the sample order and the individual->node mapping were
     # all identical. Without this line that reads as "DIFFERENT" and costs an
     # afternoon to interpret.
-    details.append(observable_verdict(a, b))
-    return False, "; ".join(details)
+    obs = observable_verdict(a, b)
+    details.append(obs)
+    all_cosmetic = all(c in COSMETIC_COLUMNS for c in differing_columns)
+    verdict = ("COSMETIC" if all_cosmetic and obs.startswith("genotypes IDENTICAL")
+               else "DIFFERENT")
+    return verdict, "; ".join(details)
 
 
 def observable_verdict(a, b):
@@ -133,13 +151,15 @@ def main(argv):
     for i in range(0, len(argv), 2):
         a, b = argv[i], argv[i + 1]
         try:
-            same, detail = compare(a, b)
+            verdict, detail = compare(a, b)
         except Exception as e:              # a truncated or absent file
             print(f"ERROR\t{a}\t{b}\t{type(e).__name__}: {e}")
             ok = False
             continue
-        print(f"{'SAME' if same else 'DIFFERENT'}\t{a}\t{b}\t{detail}")
-        ok = ok and same
+        print(f"{verdict}\t{a}\t{b}\t{detail}")
+        # COSMETIC exits 0: the simulations are the same one, and a non-zero exit
+        # here would fail every caller on spatial-coordinate noise.
+        ok = ok and verdict in ("SAME", "COSMETIC")
     return 0 if ok else 1
 
 

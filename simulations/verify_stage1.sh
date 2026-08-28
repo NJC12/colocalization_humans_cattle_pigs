@@ -111,7 +111,8 @@ if [[ "${1:-}" == "--check" ]]; then
         STATUS=$(cut -f1 <<<"$VERDICT"); DETAIL=$(cut -f4 <<<"$VERDICT")
         printf '%s\t%s\t%s\t%s (%s)\n' "$ID" "$FN" "${STATUS:-ERROR}" \
             "${DETAIL:-$VERDICT}" "$REF" >> "$REPORT.tmp"
-        [[ "$STATUS" == "SAME" ]] || ALLOK=0
+        # COSMETIC counts as reproduced: same simulation, spatial-coordinate noise.
+        [[ "$STATUS" == "SAME" || "$STATUS" == "COSMETIC" ]] || ALLOK=0
 
         # cattle_sel also writes the m4 marks table, which stage 2 reads. A plain
         # TSV, so there a byte comparison IS the content comparison.
