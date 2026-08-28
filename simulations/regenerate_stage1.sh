@@ -52,15 +52,45 @@ PY
 if [[ "${1:-}" == "--status" || "${1:-}" == "--collect" ]]; then
     MISSING=0
     declare -a READY=()
+
+    # Two staleness guards, both learned the hard way.
+    #
+    # A cancelled run leaves its outputs behind. When E/F/G were cancelled and
+    # relaunched against a corrected cattle handoff, the PREVIOUS round's
+    # .full.ts files were still on disk, so --status reported "20 of 20 ready"
+    # while the new runs had not produced anything yet. Snakemake removed them
+    # itself a minute later, as incomplete -- but in that window --collect would
+    # have published tree sequences built from the WRONG checkpoint, and nothing
+    # downstream would have noticed: they are valid tree sequences at the right
+    # seeds with the right filenames.
+    #
+    # 1. Refuse while any controller is still running. A file that exists while
+    #    its producer is still going is either stale or half-written.
+    ACTIVE=$(squeue -h -u "$USER" -o "%j" 2>/dev/null | grep -c "^regen_stage1_" || true)
+    if [[ "${ACTIVE:-0}" -gt 0 && "${1:-}" == "--collect" ]]; then
+        echo "ERROR: $ACTIVE regen_stage1 controllers are still active." >&2
+        echo "       A stage-1 file present while its producer is still running is" >&2
+        echo "       either a leftover from a previous attempt or half-written." >&2
+        exit 1
+    fi
+    # 2. No CATTLE stage-1 file may predate the handoff, because it resumes from
+    #    it and an older file was therefore built from a different one. Human is
+    #    exempt: it does not touch the handoff, so an A tree sequence built before
+    #    the handoff was installed is perfectly current.
+    HANDOFF_REF="$STAGE1_INPUTS/farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts"
     for ID in $IDS; do
         FN=$(expected_stage1_file "$ID") || { MISSING=1; continue; }
         SRC="$BUILD/$ID/stage1/$FN"
-        if [[ -f "$SRC" ]]; then
-            READY+=("$ID:$SRC")
-            printf "  ready    %-3s %s\n" "$ID" "$FN"
-        else
+        if [[ ! -f "$SRC" ]]; then
             printf "  pending  %-3s %s\n" "$ID" "$FN"
             MISSING=1
+        elif [[ "$(species_of "${ID:0:1}")" == "cattle" && -f "$HANDOFF_REF" \
+                && "$SRC" -ot "$HANDOFF_REF" ]]; then
+            printf "  STALE    %-3s %s  (older than the handoff it should derive from)\n" "$ID" "$FN"
+            MISSING=1
+        else
+            READY+=("$ID:$SRC")
+            printf "  ready    %-3s %s\n" "$ID" "$FN"
         fi
     done
     echo
