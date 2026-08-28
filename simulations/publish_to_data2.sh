@@ -33,6 +33,7 @@ source "$REPO/lib/publication_common.sh"
 DRY="${DRY:-0}"
 WITH_GLM="${WITH_GLM:-0}"
 MANIFEST="${MANIFEST:-$PUBLISH_ROOT/RUNS.tsv}"
+PYTHON="${PYTHON:-/home/njc12/miniconda3/envs/coloc_sims/bin/python}"
 LOG="$PUBLISH_ROOT/PUBLISH_LOG.tsv"
 
 [[ -f "$MANIFEST" ]] || { echo "ERROR: $MANIFEST not found" >&2; exit 1; }
@@ -199,9 +200,16 @@ done < <(awk -F'\t' 'NR==1 { for (i=1;i<=NF;i++) h[$i]=i; next }
 # arm reuses it), so a per-replicate copy would be 8x redundant. RUNS.tsv's
 # stage1_file column is the pointer.
 if [[ "$DRY" != "1" ]]; then
-    for f in ARMS.tsv RUNS.tsv; do
-        [[ -f "$REPO/../$f" ]] && cp -pu "$REPO/../$f" "$PUBLISH_ROOT/$f" 2>/dev/null
-    done
+    # Regenerate rather than copy. The previous version copied from $REPO/../,
+    # which does not exist ($REPO is the repo's simulations/ subdir) -- a guarded
+    # no-op that looked like it was doing something. Regenerating from the
+    # DEPLOYED tables means the published manifests always describe the code that
+    # produced the runs, which is the only property worth having here.
+    "$PYTHON" "$REPO/helpers/write_run_manifests.py" \
+        --out-dir "$PUBLISH_ROOT" \
+        --scratch-root "$SCRATCH_ROOT" \
+        --publish-root "$PUBLISH_ROOT" >/dev/null \
+        || echo "  WARNING: could not regenerate ARMS.tsv/RUNS.tsv" >&2
     {
         echo "tag        $(git -C "$REPO" describe --exact-match --tags 2>/dev/null || echo '(none)')"
         echo "commit     $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
