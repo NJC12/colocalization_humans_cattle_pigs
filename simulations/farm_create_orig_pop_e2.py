@@ -7,7 +7,7 @@ import resource
 
 # Code adapted from pyslim and stdpopsim websites
 # def epoch1_demographic_model(Q, seq_len, farm_recomb_rate):
-def epoch1_demographic_model(seq_len, farm_recomb_rate, pop_size=17000):
+def epoch1_demographic_model(seq_len, farm_recomb_rate, seed, pop_size=17000):
     # One rounded integer for both. These used to be `pop_size // Q` and
     # `pop_size / Q`, which at Q=0.01 gave initial_size=1,699,999 against
     # 1,700,000 sampled individuals -- harmless at that scale, but `/` also
@@ -19,24 +19,33 @@ def epoch1_demographic_model(seq_len, farm_recomb_rate, pop_size=17000):
     n_indiv = int(round(pop_size / Q))
     demog_model = msprime.Demography()
     demog_model.add_population(initial_size=n_indiv)
+    # random_seed, or the coalescent genealogy is a fresh draw every run. This was
+    # missing, which is why farm_orig_pop -- and therefore the whole cattle deep
+    # history and every checkpoint downstream of it -- could not be regenerated
+    # from --seed. Measured: two runs at seed 20250303 gave 81,474 vs 81,230 nodes.
     ots = msprime.sim_ancestry(
             samples=n_indiv,
             demography=demog_model,
             recombination_rate= (1 - (1 - 2 * farm_recomb_rate)**Q)/2,
-            sequence_length=seq_len)
+            sequence_length=seq_len,
+            random_seed=seed)
     # "Adds default metadata to everything that needs it"
     # nts: the tick is 1 because the corresponds to slim only, right? msprime has no ticks
     ots = pyslim.annotate(ots, model_type="WF", tick=1, stage="late")
     return ots
 
 # def add_muts(ots, Q, farm_mutation_rate):
-def add_muts(ots, farm_mutation_rate):
+def add_muts(ots, farm_mutation_rate, seed):
     mut_model = msprime.SLiMMutationModel(type=2)
+    # Offset from the caller's seed rather than reusing it: this is a second,
+    # independent simulation over the same tree sequence, and two msprime calls
+    # sharing one seed is the kind of coupling that is invisible until it matters.
     ots = msprime.sim_mutations(
             ots,
             rate=farm_mutation_rate * Q,
             model=mut_model,
-            keep=True)
+            keep=True,
+            random_seed=seed + 1)
     print(f'\tThe tree sequence now has {ots.num_mutations} mutations, at {ots.num_sites} distinct sites.', flush=True)
     if ots.num_mutations != ots.num_sites:
         ots = remove_bad_sites(ots)
@@ -151,13 +160,13 @@ def main():
     print('Creating demographic model', flush=True)
     start_time = time.time()
     # Measure the memory usage but still assign the output to ots
-    ots = epoch1_demographic_model(length, farm_recomb_rate)
+    ots = epoch1_demographic_model(length, farm_recomb_rate, seed)
     # Print the time taken in hours, minutes, and seconds
     print(f'\tTime taken: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))}', flush=True)
        
     print('Adding mutations', flush=True)
     start_time = time.time()
-    ots = add_muts(ots, farm_mutation_rate)
+    ots = add_muts(ots, farm_mutation_rate, seed)
     print(f'\tTime taken: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))}', flush=True)
         
     print('Adding selection coefficients')
