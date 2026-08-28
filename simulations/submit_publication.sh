@@ -162,6 +162,29 @@ else
 fi
 
 echo
+echo "-- pre-flight: no controller already on these workdirs --"
+# A second controller on a live workdir is not a no-op: controller_publication
+# runs `snakemake --unlock || true` first, which would release the RUNNING
+# controller's lock and let two DAGs write the same outputs. Detected from the
+# filesystem, not squeue, because O2's slurmctld goes unresponsive under load and
+# a guard that depends on it is a guard that disappears exactly when the cluster
+# is busy enough to need it.
+locked=0
+for i in "${!RUN_IDS[@]}"; do
+    if compgen -G "${RUN_WD[$i]}/.snakemake/locks/*" >/dev/null 2>&1; then
+        echo "  ${RUN_IDS[$i]}: ${RUN_WD[$i]} holds a snakemake lock" >&2
+        locked=1
+    fi
+done
+if (( locked )); then
+    echo "  A controller is already running on at least one of these workdirs." >&2
+    echo "  Cancel it, or narrow REPS/CATS to exclude it." >&2
+    FAIL=1
+else
+    echo "  clear"
+fi
+
+echo
 echo "-- pre-flight: nothing to overwrite --"
 existing=0
 for i in "${!RUN_IDS[@]}"; do
