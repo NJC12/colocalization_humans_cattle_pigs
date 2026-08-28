@@ -334,7 +334,24 @@ def _dapg_runtime(wc, attempt):
         # human-driven 60/30 defaults.
         base = 30 if wc.cat.endswith("gwas") else 20
     else:
-        base = 60 if wc.cat.endswith("gwas") else 30
+        # MEASURED on the publication run itself, which is the first time this
+        # branch has been exercised at scale. 68 stage3_dapg_locus jobs hit
+        # walltime at exactly 30:00 -- all of them GTEX-side, i.e. this branch's
+        # `else`. Every one succeeded on attempt 2 (60 min), so 60 is empirically
+        # sufficient and 30 was not.
+        #
+        # Why 30 was wrong: these defaults were calibrated against hgtex max 5:19
+        # and cgtex max 6:29, both measured at fm_min_maf = 0.01, where the filter
+        # DOES thin the candidate set 8.7x for human. This branch is precisely the
+        # case where it does not (fm_min_maf below _FM_THINNING_FLOOR), so the
+        # candidate count here is the unfiltered ~2847 rather than 327 -- and
+        # DAP-G's cost is at least linear in that count. The gtex tier was
+        # inheriting a number that only ever applied to the thinned case.
+        #
+        # The retries hid it: attempt scaling meant the arms still completed, so
+        # nothing failed and nothing said anything. The only visible trace was 68
+        # TIMEOUT rows in sacct.
+        base = 60 if wc.cat.endswith("gwas") else 60
     # Attempt-scaled so a walltime kill is actually recoverable: --restart-times
     # is 2, but a retry at an unchanged runtime would just be killed again.
     return base * attempt
