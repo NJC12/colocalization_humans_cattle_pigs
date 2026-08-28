@@ -169,17 +169,28 @@ echo "-- pre-flight: no controller already on these workdirs --"
 # filesystem, not squeue, because O2's slurmctld goes unresponsive under load and
 # a guard that depends on it is a guard that disappears exactly when the cluster
 # is busy enough to need it.
-locked=0
+# SKIP the locked runs rather than refusing the whole arm. Refusing was the
+# first version and it is the wrong shape: a launch truncated partway through
+# (a client timeout, a dropped connection) leaves some runs live and some
+# unstarted, and the only way to finish the arm is then to hand-pick the
+# remainder -- which this launcher cannot even express, since CATS x REPS is a
+# cross product, not an arbitrary set. Skipping makes a relaunch idempotent,
+# which is what you actually need after a truncated one.
+#
+# Only a LIVE lock is skipped. A run that stopped at stage 2 (Wave 0) holds no
+# lock and must be relaunched to continue, which is the common case.
+declare -a KEEP_IDX=()
+skipped_locked=0
 for i in "${!RUN_IDS[@]}"; do
     if compgen -G "${RUN_WD[$i]}/.snakemake/locks/*" >/dev/null 2>&1; then
-        echo "  ${RUN_IDS[$i]}: ${RUN_WD[$i]} holds a snakemake lock" >&2
-        locked=1
+        printf "  SKIP %-3s a controller already holds this workdir\n" "${RUN_IDS[$i]}"
+        skipped_locked=$((skipped_locked+1))
+    else
+        KEEP_IDX+=("$i")
     fi
 done
-if (( locked )); then
-    echo "  A controller is already running on at least one of these workdirs." >&2
-    echo "  Cancel it, or narrow REPS/CATS to exclude it." >&2
-    FAIL=1
+if (( skipped_locked )); then
+    echo "  skipping $skipped_locked run(s) already in progress; will submit the rest"
 else
     echo "  clear"
 fi
@@ -187,7 +198,7 @@ fi
 echo
 echo "-- pre-flight: nothing to overwrite --"
 existing=0
-for i in "${!RUN_IDS[@]}"; do
+for i in "${KEEP_IDX[@]}"; do
     if compgen -G "${RUN_WD[$i]}/stage4/*/*.enloc.sig.out" >/dev/null 2>&1; then
         echo "  ${RUN_IDS[$i]}: ${RUN_WD[$i]} already holds stage-4 output" >&2
         existing=1
@@ -211,9 +222,9 @@ if command -v squeue >/dev/null 2>&1; then
         echo "  regardless of what we submit; SLURM queues the excess." >&2
         QUEUED=""
     fi
-    WANT=$(( ${#RUN_IDS[@]} * JOBS + ${#RUN_IDS[@]} ))
+    WANT=$(( ${#KEEP_IDX[@]} * JOBS + ${#KEEP_IDX[@]} ))
     echo "  account=${ACCT:-?}  currently queued/running (this user): ${QUEUED:-unknown}"
-    echo "  this wave would add at most $WANT (${#RUN_IDS[@]} controllers x $JOBS + controllers)"
+    echo "  this wave would add at most $WANT (${#KEEP_IDX[@]} controllers x $JOBS + controllers)"
     if [[ -n "$QUEUED" ]] && (( QUEUED + WANT > MAX_QUEUE )); then
         echo "  ERROR: $((QUEUED + WANT)) exceeds MAX_QUEUE=$MAX_QUEUE. The account cap is" >&2
         echo "         10000 and shared; lower JOBS, split REPS, or wait." >&2
@@ -230,10 +241,11 @@ if (( FAIL )); then
 fi
 
 echo
-echo "-- pre-flight passed: ${#RUN_IDS[@]} runs --"
+echo "-- pre-flight passed: ${#KEEP_IDX[@]} runs to submit --"
+if [[ ${#KEEP_IDX[@]} -eq 0 ]]; then echo "Nothing to submit; every run is already in progress."; exit 0; fi
 
 if [[ "$DRY" == "1" ]]; then
-    for i in "${!RUN_IDS[@]}"; do
+    for i in "${KEEP_IDX[@]}"; do
         printf "  DRY %-3s seed %-3s %s\n        WD=%s\n        EXTRA=%s\n" \
             "${RUN_IDS[$i]}" "${RUN_SEED[$i]}" "${RUN_CFG[$i]}" "${RUN_WD[$i]}" "${RUN_EXTRA[$i]}"
     done
@@ -243,7 +255,7 @@ if [[ "$DRY" == "1" ]]; then
 fi
 
 echo
-for i in "${!RUN_IDS[@]}"; do
+for i in "${KEEP_IDX[@]}"; do
     JID=$(sbatch --parsable \
         --job-name="${RUN_IDS[$i]}_${ARM}" \
         --output="${RUN_WD[$i]}/controller_%j.out" \
@@ -254,6 +266,6 @@ for i in "${!RUN_IDS[@]}"; do
 done
 
 echo
-echo "Submitted ${#RUN_IDS[@]} controllers for arm $ARM."
+echo "Submitted ${#KEEP_IDX[@]} controllers for arm $ARM."
 echo "Watch:   squeue -u $USER -o '%.10i %.30j %.8T %.10M'"
 echo "Publish: ARM=$ARM bash publish_to_data2.sh   (gated; refuses partial runs)"
