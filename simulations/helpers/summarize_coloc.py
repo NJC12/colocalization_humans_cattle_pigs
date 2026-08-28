@@ -632,7 +632,7 @@ def runs_from_manifest(root):
                  os.path.join(os.path.dirname(os.path.abspath(root)), "RUNS.tsv")):
         if not os.path.isfile(cand):
             continue
-        out, header = [], None
+        rows, header = [], None
         with open(cand) as fh:
             for line in fh:
                 line = line.rstrip("\n")
@@ -642,12 +642,35 @@ def runs_from_manifest(root):
                 if header is None:
                     header = {name: i for i, name in enumerate(f)}
                     continue
-                row = {k: f[i] for k, i in header.items() if i < len(f)}
-                rep = os.path.join(root, row["run_dir"])
-                if not os.path.isdir(rep):
-                    # Rows for the other arms, or runs that have not landed yet.
-                    continue
-                out.append((rep, row.get("letter", "?"), row.get("arm")))
+                rows.append({k: f[i] for k, i in header.items() if i < len(f)})
+
+        # ONE arm's rows, when the root IS an arm directory.
+        #
+        # The run_dir column is arm-relative and the same 30 names repeat under
+        # every arm, so `<root>/<run_dir>` resolves for rows belonging to OTHER
+        # arms just as happily as for this one. Without this filter each run is
+        # visited once per arm in the manifest and emitted under every arm's
+        # label -- 4x the rows, three quarters of them mislabelled. The metrics
+        # survive it (the grouping key carries the real parameters, read from
+        # each run's own params file, so physically different arms still do not
+        # pool) but the `arm` column becomes fiction, and that column is what
+        # the figures select on.
+        #
+        # Keyed on the manifest's own arm values, not on the assumption that a
+        # root is an arm: a root that is not one is left unfiltered, which is
+        # what keeps a flat single-arm tree working.
+        arms = {r.get("arm") for r in rows if r.get("arm")}
+        here = os.path.basename(os.path.abspath(root))
+        if here in arms:
+            rows = [r for r in rows if r.get("arm") == here]
+
+        out = []
+        for row in rows:
+            rep = os.path.join(root, row["run_dir"])
+            if not os.path.isdir(rep):
+                # A run that has not landed yet.
+                continue
+            out.append((rep, row.get("letter", "?"), row.get("arm")))
         if out:
             return sorted(out)
     return None
