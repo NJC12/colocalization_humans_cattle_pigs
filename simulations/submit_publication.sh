@@ -78,7 +78,7 @@ preflight_repo || FAIL=1
 
 echo
 echo "-- pre-flight: per-run --"
-declare -a RUN_IDS=() RUN_CFG=() RUN_SEED=() RUN_WD=() RUN_PD=() RUN_EXTRA=() RUN_S1=()
+declare -a RUN_IDS=() RUN_CFG=() RUN_SEED=() RUN_WD=() RUN_PD=() RUN_EXTRA=() RUN_S1=() RUN_DIR_NAMES=()
 
 for L in $CATS; do
     CFG=$(config_of "$L") || { echo "  ERROR: unknown category '$L'" >&2; FAIL=1; continue; }
@@ -119,6 +119,7 @@ for L in $CATS; do
         RUN_IDS+=("$ID"); RUN_CFG+=("$CFG"); RUN_SEED+=("$SEED")
         RUN_WD+=("$SCRATCH_ROOT/$ARM/$DIR"); RUN_PD+=("$PUBLISH_ROOT/$ARM/$DIR")
         RUN_EXTRA+=("$EXTRA"); RUN_S1+=("$STAGE1_INPUTS")
+        RUN_DIR_NAMES+=("$DIR")
     done
 done
 
@@ -131,8 +132,15 @@ echo "-- pre-flight: stage-1 inputs --"
 MANIFEST="$PUBLISH_ROOT/RUNS.tsv"
 if [[ -f "$MANIFEST" ]]; then
     missing=0
+    # Only the runs THIS invocation submits. Checking the whole arm made a
+    # single-replicate wave refuse because replicates 2-5 were not built yet,
+    # which is the wrong answer for `REPS=1` -- and a pre-flight that refuses
+    # correct requests gets bypassed.
     while IFS=$'\t' read -r m_arm m_dir m_s1; do
         [[ "$m_arm" == "$ARM" ]] || continue
+        local_wanted=0
+        for d in "${RUN_DIR_NAMES[@]}"; do [[ "$d" == "$m_dir" ]] && local_wanted=1 && break; done
+        (( local_wanted )) || continue
         if [[ ! -f "$STAGE1_INPUTS/$m_s1" ]]; then
             echo "  MISSING $m_s1  (needed by $m_dir)" >&2; missing=1
         fi
@@ -144,7 +152,7 @@ if [[ -f "$MANIFEST" ]]; then
         echo "         sequence and a multi-hour genetic simulation starts." >&2
         FAIL=1
     else
-        echo "  all stage-1 files for $ARM present in $STAGE1_INPUTS"
+        echo "  all stage-1 files for the ${#RUN_IDS[@]} runs in this wave are present"
     fi
 else
     echo "  ERROR: $MANIFEST not found. Run helpers/write_run_manifests.py first --" >&2
