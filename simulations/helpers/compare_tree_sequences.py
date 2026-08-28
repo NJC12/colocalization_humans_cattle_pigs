@@ -31,6 +31,7 @@ Exit 0 only if every pair matches ignoring provenance.
 
 import sys
 
+import numpy as np
 import tskit
 
 
@@ -54,10 +55,34 @@ def compare(path_a, path_b):
 
     moved = [name for name in TABLES
              if getattr(ta, name) != getattr(tb, name)]
-    counts = ", ".join(
-        f"{name}: {len(getattr(ta, name))} vs {len(getattr(tb, name))}"
-        for name in moved) or "no individual table differs (metadata?)"
-    return False, f"tables differ: {', '.join(moved) or '(none)'} [{counts}]"
+    if not moved:
+        return False, "no table differs -- top-level metadata or time_units"
+
+    # WHICH COLUMN, not just which table. A table can differ in its row count
+    # (a genuinely different simulation) or in one column (often metadata that
+    # nothing downstream reads), and those need opposite responses. Reporting
+    # only the table name sent me to diagnose this by hand the first time an
+    # `individuals` table differed at an identical row count.
+    details = []
+    for name in moved:
+        A, B = getattr(ta, name), getattr(tb, name)
+        if len(A) != len(B):
+            details.append(f"{name}: {len(A)} vs {len(B)} rows")
+            continue
+        cols = []
+        for col in A.column_names:
+            try:
+                same = np.array_equal(np.asarray(getattr(A, col)),
+                                      np.asarray(getattr(B, col)))
+            except Exception:
+                same = getattr(A, col) == getattr(B, col)
+            if not same:
+                cols.append(col)
+        meta_only = bool(cols) and all("metadata" in c for c in cols)
+        suffix = " (METADATA ONLY)" if meta_only else ""
+        details.append(f"{name}: {len(A)} rows, columns differ: "
+                       f"{', '.join(cols) or 'unknown'}{suffix}")
+    return False, "; ".join(details)
 
 
 def main(argv):
