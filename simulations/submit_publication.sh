@@ -214,8 +214,15 @@ if command -v squeue >/dev/null 2>&1; then
     # can hang for minutes -- and an unbounded call here hung the launcher itself,
     # which is strictly worse than having no headroom check: the operator sees
     # nothing happen and cannot tell a refusal from a stall.
-    ACCT=$(timeout 20 sacctmgr -n -P show assoc where user="$USER" format=Account 2>/dev/null | head -1)
-    QUEUED=$(timeout 20 squeue -h -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+    # `|| true` is load-bearing, not defensive noise. This script runs under
+    # `set -euo pipefail`, and `timeout` exits 124 when it fires. With pipefail
+    # that makes the whole pipeline fail, which makes the assignment fail, which
+    # with -e exits the script -- SILENTLY, mid-pre-flight, having submitted
+    # nothing. That is exactly what happened: both arm launchers died here with
+    # the log ending at this section header and no error anywhere. The fix for an
+    # unbounded hang introduced a silent exit in its place.
+    ACCT=$(timeout 20 sacctmgr -n -P show assoc where user="$USER" format=Account 2>/dev/null | head -1 || true)
+    QUEUED=$(timeout 20 squeue -h -u "$USER" 2>/dev/null | wc -l | tr -d ' ' || true)
     if [[ -z "$QUEUED" || "$QUEUED" == "0" ]] && ! timeout 20 squeue -h -u "$USER" >/dev/null 2>&1; then
         echo "  squeue did not answer within 20s -- scheduler is loaded." >&2
         echo "  SKIPPING the headroom check. The account GrpTRES cap bounds this" >&2
