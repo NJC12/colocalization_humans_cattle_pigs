@@ -4,7 +4,7 @@
 # replicate, one controller each.
 #
 #   ARM=causal_maf001_paired bash submit_publication.sh
-#   ARM=causal_power_n8000 REPS="1" UNTIL=stage2 JOBS=4 bash submit_publication.sh
+#   ARM=causal_power_n30000 REPS="1" UNTIL=stage2 JOBS=4 bash submit_publication.sh
 #   DRY=1 ARM=... bash submit_publication.sh          # pre-flight only, no sbatch
 #
 # Env:

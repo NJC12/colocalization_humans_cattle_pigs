@@ -19,7 +19,19 @@
 #                            200,000-person GWAS -- "which loci would a large
 #                            study report?" -- without changing the simulated
 #                            8,000-person GWAS.
-#   causal_power_n8000       the same weighting at this run's own GWAS size.
+#   causal_power_n30000      the same weighting at a 30,000-person GWAS -- the
+#                            small-study end of the same question.
+#
+# WHY 30,000 AND NOT 8,000 (the simulated panel size). The arm was first written
+# at sampling_gwas_n=8000 so that the weight matched the panel actually
+# simulated, and stage 2 REFUSED three of the five human replicates: the guard in
+# select_central_power wants 2 x 25 = 50 candidates at power >= 0.05, and the
+# human pool supplied only 39, 49 and 39. That is not a tuning failure, it is the
+# regime: at n=8,000 a 2 Mb window holds ~40 variants with 5% power at 5e-8, so a
+# 25-locus 'power-weighted' draw is a near-deterministic pick of those 40. Swept
+# over the recorded per-candidate (maf_for_power, beta) diagnostics, the eligible
+# count crosses 50 for every one of the 30 runs by n=20,000; 30,000 leaves the
+# tightest run (human_baseline_negative_selection_rep2) at 99, ~2x the guard.
 #
 # The two power arms drop the MAF floor (causal_min_maf 0): the detection-power
 # weight is already a preference over frequency and effect size jointly, so a
@@ -39,4 +51,4 @@ arm	causal_min_maf	causal_sampling	sampling_gwas_n	sampling_sig_p	sampling_min_p
 causal_maf001_paired	0.001	uniform	8000	5e-8	0.05	1	2	True	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	uniform draw from the MAF>=0.001 pool; causal loci REQUIRED to segregate in both panels
 causal_maf001_unpaired	0.001	uniform	8000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	uniform draw from the MAF>=0.001 pool; causal loci NOT required in both panels
 causal_power_n200000	0	power	200000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	power-weighted draw (n=200000, no plateau), no MAF floor; not required in both panels
-causal_power_n8000	0	power	8000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	power-weighted draw (n=8000, no plateau), no MAF floor; not required in both panels
+causal_power_n30000	0	power	30000	5e-8	0.05	1	2	False	0.001	0.001	5	20	25	25	-1	8000	2000000	250000	0.75	coloc_default	True	power-weighted draw (n=30000, no plateau), no MAF floor; not required in both panels

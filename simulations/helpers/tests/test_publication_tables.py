@@ -60,7 +60,7 @@ def test_the_six_publication_categories_are_present():
 
 def test_the_four_publication_arms_are_present():
     assert set(ARMS) == {"causal_maf001_paired", "causal_maf001_unpaired",
-                         "causal_power_n200000", "causal_power_n8000"}
+                         "causal_power_n200000", "causal_power_n30000"}
 
 
 def test_directory_names_are_interpretable_and_unique():
@@ -205,7 +205,7 @@ def test_the_two_uniform_arms_differ_in_exactly_one_key():
 
 
 def test_the_two_power_arms_differ_in_exactly_one_key():
-    a, b = ARMS["causal_power_n200000"], ARMS["causal_power_n8000"]
+    a, b = ARMS["causal_power_n200000"], ARMS["causal_power_n30000"]
     diff = {k for k in ARM_HEADER if k not in ("arm", "description") and a[k] != b[k]}
     assert diff == {"sampling_gwas_n"}, diff
 
@@ -216,3 +216,56 @@ def test_power_arms_require_an_explicit_trait_count():
     for arm, r in ARMS.items():
         if r["causal_sampling"] == "power":
             assert int(r["n_central_traits"]) > 0, arm
+
+
+# The power guard is a launch-time cliff, not a warning. Encoding the measurement
+# here is the only place it is cheap to check: the guard itself lives inside
+# stage 2, so a too-small sampling_gwas_n is otherwise discovered by thirty
+# controllers that each run for half an hour and then refuse.
+POWER_N_FLOOR = 20000
+
+def test_power_arms_clear_the_eligible_pool_guard():
+    """No power arm may sit below the measured feasibility floor.
+
+    `select_central_power` refuses the draw unless the pool holds
+    `sampling_min_pool_multiple * n_central_traits` candidates at
+    power >= `sampling_min_power`. The arm was first written at
+    sampling_gwas_n=8000 and stage 2 refused three of the five human baseline
+    replicates -- 39, 49 and 39 eligible against a required 50.
+
+    Swept over the per-candidate (maf_for_power, beta) diagnostics that the
+    n=200000 arm recorded for all 30 runs (the pool does not depend on
+    sampling_gwas_n, only the weight does), the number of runs the guard would
+    refuse is:
+
+        n= 8,000  3 of 30      n= 40,000  0 of 30
+        n=20,000  0 of 30      n= 50,000  0 of 30
+        n=30,000  0 of 30      n=200,000  0 of 30
+
+    so 20,000 is the smallest round value at which every run clears it, and the
+    published arm uses 30,000, where the tightest run
+    (human_baseline_negative_selection_rep2) has 99 eligible against 50.
+    """
+    for arm, r in ARMS.items():
+        if r["causal_sampling"] != "power":
+            continue
+        n = int(float(r["sampling_gwas_n"]))
+        assert n >= POWER_N_FLOOR, (
+            f"arm {arm} draws causal loci by power at sampling_gwas_n={n}, below the "
+            f"measured floor of {POWER_N_FLOOR}. At n=8000 the human pool supplied "
+            f"39-49 candidates at power>=0.05 against the {r['sampling_min_pool_multiple']}"
+            f"x{r['n_central_traits']} the guard requires, and stage 2 exits. Raise n, or "
+            f"lower sampling_min_power / sampling_min_pool_multiple deliberately and "
+            f"move this floor with a fresh sweep."
+        )
+
+
+def test_the_guard_requirement_is_what_the_floor_was_measured_against():
+    """The floor above is only valid for the guard settings it was swept at."""
+    for arm, r in ARMS.items():
+        if r["causal_sampling"] != "power":
+            continue
+        assert float(r["sampling_min_power"]) == 0.05, arm
+        assert float(r["sampling_min_pool_multiple"]) == 2, arm
+        assert float(r["sampling_sig_p"]) == 5e-8, arm
+        assert int(r["n_central_traits"]) == 25, arm

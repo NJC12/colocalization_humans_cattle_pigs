@@ -135,8 +135,8 @@ def test_the_full_publication_grid_is_distinct_within_an_arm():
         "causal_maf001_unpaired": dict(causal_min_maf=0.001, require_gtex_partner=False),
         "causal_power_n200000":   dict(causal_min_maf=0, causal_sampling="power",
                                        sampling_gwas_n=200000, require_gtex_partner=False),
-        "causal_power_n8000":     dict(causal_min_maf=0, causal_sampling="power",
-                                       sampling_gwas_n=8000, require_gtex_partner=False),
+        "causal_power_n30000":    dict(causal_min_maf=0, causal_sampling="power",
+                                       sampling_gwas_n=30000, require_gtex_partner=False),
     }
     for arm, over in arms.items():
         a = paths.stage2_run_tag({**BASE, **over})
