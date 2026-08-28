@@ -176,12 +176,22 @@ done
 echo
 echo "-- pre-flight: queue headroom --"
 if command -v squeue >/dev/null 2>&1; then
-    ACCT=$(sacctmgr -n -P show assoc where user="$USER" format=Account 2>/dev/null | head -1)
-    QUEUED=$(squeue -h -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+    # Bounded. O2's login-node slurmctld goes unresponsive under load -- squeue
+    # can hang for minutes -- and an unbounded call here hung the launcher itself,
+    # which is strictly worse than having no headroom check: the operator sees
+    # nothing happen and cannot tell a refusal from a stall.
+    ACCT=$(timeout 20 sacctmgr -n -P show assoc where user="$USER" format=Account 2>/dev/null | head -1)
+    QUEUED=$(timeout 20 squeue -h -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ -z "$QUEUED" || "$QUEUED" == "0" ]] && ! timeout 20 squeue -h -u "$USER" >/dev/null 2>&1; then
+        echo "  squeue did not answer within 20s -- scheduler is loaded." >&2
+        echo "  SKIPPING the headroom check. The account GrpTRES cap bounds this" >&2
+        echo "  regardless of what we submit; SLURM queues the excess." >&2
+        QUEUED=""
+    fi
     WANT=$(( ${#RUN_IDS[@]} * JOBS + ${#RUN_IDS[@]} ))
-    echo "  account=${ACCT:-?}  currently queued/running (this user): $QUEUED"
+    echo "  account=${ACCT:-?}  currently queued/running (this user): ${QUEUED:-unknown}"
     echo "  this wave would add at most $WANT (${#RUN_IDS[@]} controllers x $JOBS + controllers)"
-    if (( QUEUED + WANT > MAX_QUEUE )); then
+    if [[ -n "$QUEUED" ]] && (( QUEUED + WANT > MAX_QUEUE )); then
         echo "  ERROR: $((QUEUED + WANT)) exceeds MAX_QUEUE=$MAX_QUEUE. The account cap is" >&2
         echo "         10000 and shared; lower JOBS, split REPS, or wait." >&2
         FAIL=1
