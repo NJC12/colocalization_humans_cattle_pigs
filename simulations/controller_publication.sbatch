@@ -59,16 +59,59 @@ STAGE1_CFG="stage1_search_dirs=['$STAGE1_SRC']"
 
 mkdir -p "$WD"
 
+# ---------------------------------------------------------------------------
+# Claim the workdir, atomically, before touching anything.
+#
+# WHY THIS EXISTS. Two controllers landed on the same workdir and BOTH ran, in
+# arm causal_power_n200000. The launcher does check for a live lock, but that
+# check is TOCTOU: it runs at submit time and the controller starts minutes
+# later, so two launchers minutes apart both pass it. Snakemake's own lock would
+# have caught the second one -- except the `--unlock` below runs first and
+# released the FIRST controller's lock, after which both DAGs wrote the same
+# outputs. The unlock exists for a stale lock left by a killed controller, and it
+# could not tell that case from a live one.
+#
+# `mkdir` is the atomic primitive here: it either creates the directory or fails,
+# with no window in between. Deliberately NOT squeue-based -- O2's slurmctld goes
+# unresponsive under exactly the load that makes this race likely, and a mutex
+# that evaporates under load is not a mutex.
+CLAIM="$WD/.controller_claim"
+if mkdir "$CLAIM" 2>/dev/null; then
+    echo "$SLURM_JOB_ID" > "$CLAIM/jobid"
+    CLAIMED=fresh
+else
+    OTHER=$(cat "$CLAIM/jobid" 2>/dev/null || true)
+    STATE=$(scontrol show job "${OTHER:-0}" 2>/dev/null | tr " " "\n" | grep "^JobState=" | head -1 || true)
+    if [[ "$STATE" == "JobState=RUNNING" || "$STATE" == "JobState=PENDING" ]]; then
+        echo "REFUSING: controller ${OTHER} already holds $WD (${STATE})."
+        echo "Two controllers on one workdir means two DAGs writing the same"
+        echo "outputs, which is not detectable afterwards from the outputs alone."
+        exit 0
+    fi
+    # The claim is stale: its owner is gone. Take it over, and only NOW is
+    # unlocking the snakemake lock the right thing to do.
+    echo "claim held by ${OTHER:-unknown} (${STATE:-gone}); taking it over"
+    echo "$SLURM_JOB_ID" > "$CLAIM/jobid"
+    CLAIMED=stale
+fi
+# Release the claim however this job ends, so a requeue is not blocked by it.
+trap 'rm -rf "$CLAIM"' EXIT
+
 # Run FROM the replicate's own workdir so Snakemake's .snakemake/ (lock, iocache,
 # slurm_logs) lands under $WD rather than a shared $REPO/.snakemake, which would
 # race across concurrent controllers. SIM_REPO_DIR is derived from the absolute
 # --snakefile path, so every script and include still resolves against $REPO.
 cd "$WD"
 
-# --unlock is a no-op on a fresh workdir; harmless if a prior controller died.
-"$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" --unlock \
-    --config stage1_seed="$SEED" stage2_seed="$SEED" workdir="$WD" publishdir="$PD" \
-    "$STAGE1_CFG" $EXTRA_CONFIG || true
+# Unlock ONLY when we took over a stale claim, i.e. when the previous controller
+# is provably gone. Doing it unconditionally is what let two controllers coexist:
+# it cannot distinguish a lock held by a dead process from one held by a live one,
+# and it silently released the live one.
+if [[ "$CLAIMED" == "stale" ]]; then
+    "$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" --unlock \
+        --config stage1_seed="$SEED" stage2_seed="$SEED" workdir="$WD" publishdir="$PD" \
+        "$STAGE1_CFG" $EXTRA_CONFIG || true
+fi
 
 "$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" \
     --profile "$REPO/profiles/o2" --rerun-triggers mtime \

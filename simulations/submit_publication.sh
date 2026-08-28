@@ -57,6 +57,19 @@ PASS_KEYS="causal_min_maf causal_sampling sampling_gwas_n sampling_sig_p
 # params file disagrees with ARMS.tsv.
 ASSERT_KEYS="gwas_scaling gtex_scaling gtex_size gwas_size L"
 
+# One launcher per arm at a time. Two concurrent launchers for the same arm is
+# the proximate cause of the controller collision: each passed the live-lock
+# check minutes apart, and both submitted the same runs. mkdir is atomic; the
+# claim is released on exit however this script ends.
+LAUNCH_CLAIM="${TMPDIR:-/tmp}/.publaunch_${ARM}.claim"
+if ! mkdir "$LAUNCH_CLAIM" 2>/dev/null; then
+    echo "ERROR: another launcher is already running for arm $ARM" >&2
+    echo "       ($LAUNCH_CLAIM exists). Wait for it, or remove that directory" >&2
+    echo "       if you are certain no launcher is alive." >&2
+    exit 1
+fi
+trap 'rmdir "$LAUNCH_CLAIM" 2>/dev/null || true' EXIT
+
 echo "=============================================================="
 echo " arm         $ARM"
 echo "             $(arm_field "$ARM" description)"
