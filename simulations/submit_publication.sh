@@ -315,8 +315,9 @@ if [[ ${#KEEP_IDX[@]} -eq 0 ]]; then echo "Nothing to submit; every run is alrea
 
 if [[ "$DRY" == "1" ]]; then
     for i in "${KEEP_IDX[@]}"; do
-        printf "  DRY %-3s seed %-3s %s\n        WD=%s\n        EXTRA=%s\n" \
-            "${RUN_IDS[$i]}" "${RUN_SEED[$i]}" "${RUN_CFG[$i]}" "${RUN_WD[$i]}" "${RUN_EXTRA[$i]}"
+        printf "  DRY %-4s seed %-4s deep_history %-9s %s\n        WD=%s\n        EXTRA=%s\n" \
+            "${RUN_IDS[$i]}" "${RUN_SEED[$i]}" "${RUN_CB[$i]:--}" \
+            "${RUN_CFG[$i]}" "${RUN_WD[$i]}" "${RUN_EXTRA[$i]}"
     done
     echo
     echo "DRY=1: nothing submitted."
