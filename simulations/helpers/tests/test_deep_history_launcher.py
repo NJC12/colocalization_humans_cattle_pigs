@@ -178,3 +178,37 @@ def test_the_workdir_is_seed_namespaced():
 
 def test_concurrent_builds_are_distinguishable_in_the_queue():
     assert '--job-name="deep_history_$CB_SEED"' in REBUILD
+
+
+# ------------------------------------------------ the stage-1 regeneration
+
+REGEN = _read("regenerate_stage1.sh")
+
+
+def test_regen_builds_every_replicate_the_table_defines():
+    """A literal 20-ID list would silently skip replicates 6-20."""
+    assert "IDS=\"${IDS:-$(_default_ids)}\"" in REGEN
+    assert "for r in $(replicate_list)" in REGEN
+
+
+def test_regen_passes_the_per_replicate_deep_history():
+    """Without the explicit seed a cattle replicate takes the config YAML's
+    20250303 while its filename claims _cb{other} -- a stage-1 file that lies
+    about its own ancestry, which nothing downstream could detect."""
+    assert 'cattle_baseline_seed=$CB' in REGEN
+    assert 'cattle_baseline_seed_of "${ID:1}"' in REGEN
+
+
+def test_regen_looks_for_handoffs_in_the_deep_history_directory():
+    assert "cattle_baseline_search_dirs=['$DEEP_HISTORIES']" in REGEN
+    assert "seed_20250303.ep7.ts" not in REGEN, "a hardcoded handoff is left"
+
+
+def test_regen_checks_every_handoff_the_wave_needs():
+    assert "MISSING_HANDOFF" in REGEN
+
+
+def test_regen_staleness_compares_against_the_right_handoff():
+    """One reference would compare every replicate against block 1's handoff and
+    report blocks 2-4 stale."""
+    assert 'HANDOFF_REF="$DEEP_HISTORIES/$(deep_history_handoff_of "${ID:1}")"' in REGEN

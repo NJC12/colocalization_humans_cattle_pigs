@@ -33,7 +33,15 @@ SNAKEMAKE="${SNAKEMAKE:-/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake}"
 PYTHON="${PYTHON:-/home/njc12/miniconda3/envs/coloc_sims/bin/python}"
 BUILD="${BUILD:-$SCRATCH_ROOT/stage1_build}"
 STAGE1_INPUTS="${STAGE1_INPUTS:-$PUBLISH_ROOT/stage1_inputs}"
-IDS="${IDS:-A1 A2 A3 A4 A5 E1 E2 E3 E4 E5 F1 F2 F3 F4 F5 G1 G2 G3 G4 G5}"
+# The self-donor categories x every replicate the deep-history table defines.
+# K and L adopt A's and E's tree sequences, so they never build one.
+_default_ids() {
+    local l r
+    for l in A E F G; do
+        for r in $(replicate_list); do printf "%s%s " "$l" "$r"; done
+    done
+}
+IDS="${IDS:-$(_default_ids)}"
 
 expected_stage1_file() {
     local letter="${1:0:1}" cfg seed
@@ -77,15 +85,19 @@ if [[ "${1:-}" == "--status" || "${1:-}" == "--collect" ]]; then
     #    it and an older file was therefore built from a different one. Human is
     #    exempt: it does not touch the handoff, so an A tree sequence built before
     #    the handoff was installed is perfectly current.
-    HANDOFF_REF="$STAGE1_INPUTS/farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts"
+    # Per-replicate: with four deep histories a single reference would compare
+    # every replicate against block 1's handoff and call blocks 2-4 stale.
     for ID in $IDS; do
         FN=$(expected_stage1_file "$ID") || { MISSING=1; continue; }
         SRC="$BUILD/$ID/stage1/$FN"
+        HANDOFF_REF=""
+        if [[ "$(species_of "${ID:0:1}")" == "cattle" ]]; then
+            HANDOFF_REF="$DEEP_HISTORIES/$(deep_history_handoff_of "${ID:1}")"
+        fi
         if [[ ! -f "$SRC" ]]; then
             printf "  pending  %-3s %s\n" "$ID" "$FN"
             MISSING=1
-        elif [[ "$(species_of "${ID:0:1}")" == "cattle" && -f "$HANDOFF_REF" \
-                && "$SRC" -ot "$HANDOFF_REF" ]]; then
+        elif [[ -n "$HANDOFF_REF" && -f "$HANDOFF_REF" && "$SRC" -ot "$HANDOFF_REF" ]]; then
             printf "  STALE    %-3s %s  (older than the handoff it should derive from)\n" "$ID" "$FN"
             MISSING=1
         else
@@ -120,19 +132,30 @@ fi
 
 # The new handoff must be in place first, or the cattle categories resume from
 # the archived one and the regeneration silently achieves nothing.
-HANDOFF="$STAGE1_INPUTS/farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts"
-if [[ ! -f "$HANDOFF" ]]; then
-    echo "ERROR: $HANDOFF is missing." >&2
-    echo "       Run rebuild_cattle_deep_history.sh (and --rescale) first, then" >&2
-    echo "       copy the Q=0.01 checkpoint into stage1_inputs/. Without it the" >&2
-    echo "       cattle categories would resume from the ARCHIVED checkpoint," >&2
-    echo "       whose ancestor was built with the unseeded permutation." >&2
+# Every handoff this wave needs, one per deep history it touches. A missing one
+# does not fail loudly downstream: Snakemake would decide it must BUILD the deep
+# history, which is a multi-hour job inside a stage-1 sbatch.
+MISSING_HANDOFF=0
+for ID in $IDS; do
+    [[ "$(species_of "${ID:0:1}")" == "cattle" ]] || continue
+    H="$DEEP_HISTORIES/$(deep_history_handoff_of "${ID:1}")" || { MISSING_HANDOFF=1; continue; }
+    if [[ ! -f "$H" ]]; then
+        echo "ERROR: missing handoff for $ID: $H" >&2
+        MISSING_HANDOFF=1
+    fi
+done
+if (( MISSING_HANDOFF )); then
+    echo "       Run rebuild_cattle_deep_history.sh (and --rescale) for the missing" >&2
+    echo "       seeds, then collect them into $DEEP_HISTORIES. Without the right" >&2
+    echo "       handoff a replicate resumes from a DIFFERENT ancestry than the one" >&2
+    echo "       publication_deep_histories.tsv assigns it, and the filename would" >&2
+    echo "       still say otherwise." >&2
     exit 1
 fi
 
 echo "repo:          $REPO ($(git -C "$REPO" describe --exact-match --tags 2>/dev/null || git -C "$REPO" rev-parse --short HEAD))"
 echo "build dir:     $BUILD"
-echo "cattle handoff: $HANDOFF"
+echo "deep histories: $DEEP_HISTORIES ($(awk -F'\t' 'NR>1{print $2}' "$DEEP_HISTORIES_TSV" | sort -u | wc -l | tr -d ' ') distinct)"
 echo
 
 for ID in $IDS; do
@@ -145,8 +168,14 @@ for ID in $IDS; do
     # cattle pipelines -- the Snakefile is strict about keys reaching the wrong
     # pipeline, and the human configs have no such key.
     EXTRA="stage1_search_dirs=[]"
+    CB=""
     if [[ "$(species_of "$L")" == "cattle" ]]; then
-        EXTRA+=" cattle_baseline_search_dirs=['$STAGE1_INPUTS']"
+        # The deep history this replicate resumes from. Without the explicit seed
+        # every replicate would take the config YAML's 20250303 and the four
+        # ancestries would collapse into one -- while the F/G filename, which now
+        # carries _cb{seed}, would claim otherwise.
+        CB=$(cattle_baseline_seed_of "${ID:1}") || exit 1
+        EXTRA+=" cattle_baseline_seed=$CB cattle_baseline_search_dirs=['$DEEP_HISTORIES']"
     fi
     JID=$(sbatch --parsable \
         --job-name="regen_stage1_$ID" \
@@ -160,7 +189,7 @@ for ID in $IDS; do
             --profile '$REPO/profiles/o2' --rerun-triggers mtime -j 4 --until stage1 \
             --config stage1_seed=$SEED stage2_seed=$SEED workdir='$WD' \
                      publishdir='$WD' $EXTRA")
-    printf "  %-3s seed %-3s job %s   %s\n" "$ID" "$SEED" "$JID" "$CFG"
+    printf "  %-4s seed %-4s cb %-9s job %s   %s\n" "$ID" "$SEED" "${CB:--}" "$JID" "$CFG"
 done
 
 echo
