@@ -43,18 +43,50 @@ _default_ids() {
 }
 IDS="${IDS:-$(_default_ids)}"
 
+# The name the BUILD will produce, which is not the name the config alone
+# implies: every cattle config still carries cattle_baseline_seed: 20250303, and
+# with four deep histories the replicate's own seed is what belongs here. Without
+# it this returned the block-1 name for every replicate -- so --status reported
+# all 45 cattle builds "pending" while the correct files sat beside them, and
+# --collect refused. (Better than the reverse: it refused rather than collecting
+# a file whose name disagreed with the ancestry it was built from.)
 expected_stage1_file() {
-    local letter="${1:0:1}" cfg seed
+    local letter="${1:0:1}" cfg seed cb
     cfg=$(config_of "$letter") || return 1
     seed=$(seed_of "$1") || return 1
-    "$PYTHON" - "$REPO" "$REPO/$cfg" "$seed" <<'PY'
+    cb=""
+    if [[ "$(species_of "$letter")" == "cattle" ]]; then
+        cb=$(cattle_baseline_seed_of "${1:1}") || return 1
+    fi
+    "$PYTHON" - "$REPO" "$REPO/$cfg" "$seed" "$cb" <<'INNER'
 import sys, yaml
 sys.path.insert(0, sys.argv[1])
 from helpers import paths
 cfg = yaml.safe_load(open(sys.argv[2]))
 cfg["stage1_seed"] = int(sys.argv[3])
+if sys.argv[4]:
+    cfg["cattle_baseline_seed"] = int(sys.argv[4])
 print(paths.stage1_full_filename(cfg))
-PY
+INNER
+}
+
+# The marks file stage1_cattle_sel requires beside the .full.ts. Same override:
+# it carries the segment too, so the same stale-name problem applies.
+expected_stage1_marks() {
+    local letter="${1:0:1}" cfg seed cb
+    [[ "$(pipeline_of "$letter")" == "cattle_sel" ]] || return 1
+    cfg=$(config_of "$letter") || return 1
+    seed=$(seed_of "$1") || return 1
+    cb=$(cattle_baseline_seed_of "${1:1}") || return 1
+    "$PYTHON" - "$REPO" "$REPO/$cfg" "$seed" "$cb" <<'INNER'
+import sys, yaml
+sys.path.insert(0, sys.argv[1])
+from helpers import paths
+cfg = yaml.safe_load(open(sys.argv[2]))
+cfg["stage1_seed"] = int(sys.argv[3])
+cfg["cattle_baseline_seed"] = int(sys.argv[4])
+print(paths.stage1_cattle_sel_marks(cfg))
+INNER
 }
 
 if [[ "${1:-}" == "--status" || "${1:-}" == "--collect" ]]; then
