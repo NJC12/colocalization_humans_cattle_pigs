@@ -141,7 +141,7 @@ def test_no_config_token_contains_a_space():
 # ------------------------------------------------- bash and Python must agree
 
 @pytest.mark.parametrize("letter", sorted(CATS))
-@pytest.mark.parametrize("rep", [1, 5])
+@pytest.mark.parametrize("rep", range(1, 21))
 def test_shell_and_python_derive_the_same_seed(letter, rep):
     assert sh(f"seed_of {letter}{rep}") == f"{CATS[letter]['seed_prefix']}{rep}"
 
@@ -269,3 +269,78 @@ def test_the_guard_requirement_is_what_the_floor_was_measured_against():
         assert float(r["sampling_min_pool_multiple"]) == 2, arm
         assert float(r["sampling_sig_p"]) == 5e-8, arm
         assert int(r["n_central_traits"]) == 25, arm
+
+
+# ------------------------------------------------------- the seed record itself
+
+#: Every seed the publication set uses, written out. This is the RECORD -- the
+#: rule is `"{seed_prefix}{replicate}"`, and a rule can be edited without anyone
+#: noticing which runs it moves. 80 finished runs are named for the stage-1 files
+#: these produce (via `hts_{seed}.ts`, `..seed_{s1}.full.ts`, `.._sd{s1}.full.ts`),
+#: so a change here is a change to what is already on disk.
+#:
+#: Note reps 10-20 are three digits: the rule concatenates rather than adds, so
+#: A20 is "1"+"20" = 120, not 1*10+20. That is deliberate and is why A/K reps
+#: 11-19 land on 111-119, which the preliminary round-3 K1-K9 also used. Benign
+#: in content -- preliminary K ran A's human config at those seeds, so the tree
+#: sequence is the same simulation -- but human stage-1 files are `hts_{seed}.ts`
+#: and search_dirs' pattern (sd\d+|seed_\d+) does not match them, so no seed check
+#: ever fires for human. A stale hts_1NN.ts is caught by checksum, not by name.
+EXPECTED_SEEDS = {
+    "A": [11, 12, 13, 14, 15, 16, 17, 18, 19,
+          110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120],
+    "E": [51, 52, 53, 54, 55, 56, 57, 58, 59,
+          510, 511, 512, 513, 514, 515, 516, 517, 518, 519, 520],
+    "F": [61, 62, 63, 64, 65, 66, 67, 68, 69,
+          610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620],
+    "G": [71, 72, 73, 74, 75, 76, 77, 78, 79,
+          710, 711, 712, 713, 714, 715, 716, 717, 718, 719, 720],
+}
+EXPECTED_SEEDS["K"] = EXPECTED_SEEDS["A"]   # K adopts A's tree sequence
+EXPECTED_SEEDS["L"] = EXPECTED_SEEDS["E"]   # L adopts E's
+
+
+@pytest.mark.parametrize("letter", sorted(EXPECTED_SEEDS))
+def test_the_seeds_are_what_the_record_says(letter):
+    got = [int(sh(f"seed_of {letter}{rep}")) for rep in range(1, 21)]
+    assert got == EXPECTED_SEEDS[letter]
+
+
+@pytest.mark.parametrize("letter", sorted(EXPECTED_SEEDS))
+def test_the_first_five_replicates_are_frozen(letter):
+    """80 published runs are named for these. Nothing may move them."""
+    assert [int(sh(f"seed_of {letter}{r}")) for r in (1, 2, 3, 4, 5)] \
+        == EXPECTED_SEEDS[letter][:5]
+
+
+def test_a_paired_category_takes_its_donors_seed_at_every_replicate():
+    for rep in range(1, 21):
+        assert sh(f"seed_of K{rep}") == sh(f"seed_of A{rep}")
+        assert sh(f"seed_of L{rep}") == sh(f"seed_of E{rep}")
+
+
+def test_the_only_overlap_with_a_historical_band_is_the_documented_one():
+    """Historical bands are `10*letter_index + replicate`, concatenated, for
+    indices 1..14 (A,B,E,F,G,H,I,J,K,L,M,N). The publication set re-enters
+    exactly one of them -- A/K reps 11-19 on K's old 11N band -- and nothing else.
+    A surprise here means a category's stage-1 file could be adopted by another.
+    """
+    pub = {s for v in EXPECTED_SEEDS.values() for s in v}
+    hist = {int(f"{i}{r}") for i in range(1, 15) for r in range(1, 10)}
+    assert sorted(pub & hist) == [11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                  51, 52, 53, 54, 55, 56, 57, 58, 59,
+                                  61, 62, 63, 64, 65, 66, 67, 68, 69,
+                                  71, 72, 73, 74, 75, 76, 77, 78, 79,
+                                  111, 112, 113, 114, 115, 116, 117, 118, 119]
+
+
+def test_no_human_seed_is_a_prefix_of_another_where_it_would_matter():
+    """`hts_11` IS a string prefix of `hts_110`..`hts_119`, which is safe only
+    because nothing globs human stage-1 names on a seed prefix. Pin the two
+    places that could: read_params globs `{tag}.*.params.txt` with a literal dot
+    AND verifies _derived.stage2_run_tag, and _seed_collision_check globs `sd*`,
+    which no `hts_` name matches. If either changes, this is the alarm.
+    """
+    from helpers import search_dirs
+    for seed in EXPECTED_SEEDS["A"]:
+        assert search_dirs._extract_seed(f"hts_{seed}.ts") is None

@@ -37,6 +37,8 @@
 #   EXTRA_CONFIG- the arm: floors, trait counts, sampling scheme, pairing rule
 #   JOBS        - max concurrent SLURM jobs for this controller
 #   UNTIL       - optional --until target (e.g. stage2)
+#   SPECIES     - human|cattle; gates the deep-history config below
+#   CB_SEED     - cattle only: this replicate's cattle_baseline_seed
 
 set -euo pipefail
 REPO="${REPO:-/n/data2/hms/dbmi/sunyaev/lab/nconnally/slim_simulations/publication_repo/simulations}"
@@ -56,6 +58,27 @@ UNTIL="${UNTIL:-}"
 # genetic simulation starts instead of a symlink.
 : "${STAGE1_SRC:?STAGE1_SRC is required -- an empty value silently rebuilds stage 1}"
 STAGE1_CFG="stage1_search_dirs=['$STAGE1_SRC']"
+
+# The cattle deep history this replicate resumes from. Passed separately from
+# EXTRA_CONFIG, which is the ARM (floors, trait counts, sampling scheme, pairing
+# rule); this one is per-REPLICATE, from helpers/publication_deep_histories.tsv.
+CB_CFG=""
+if [[ "${SPECIES:-}" == "cattle" ]]; then
+    if [[ -z "${CB_SEED:-}" ]]; then
+        echo "ERROR: a cattle run needs CB_SEED." >&2
+        echo "  Without it the run falls back to the cattle_baseline_seed in the" >&2
+        echo "  config YAML (20250303), and the four independent deep histories" >&2
+        echo "  silently collapse back to the one shared history that this whole" >&2
+        echo "  change exists to remove. Nothing downstream would report it." >&2
+        exit 1
+    fi
+    # EMPTY search dirs, deliberately, NOT the deep-history directory. Stage 1 is
+    # ALWAYS adopted here. If the directory were listed, a missing stage-1 file
+    # would make Snakemake resume from the handoff and start a ~2 h SLiM run
+    # inside a controller sized for symlinks (1 day, 4 GB); with [] it cannot,
+    # and the run stops with the message at rules/stage1_cattle_sel.smk:111.
+    CB_CFG="cattle_baseline_seed=$CB_SEED cattle_baseline_search_dirs=[]"
+fi
 
 mkdir -p "$WD"
 
@@ -110,11 +133,11 @@ cd "$WD"
 if [[ "$CLAIMED" == "stale" ]]; then
     "$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" --unlock \
         --config stage1_seed="$SEED" stage2_seed="$SEED" workdir="$WD" publishdir="$PD" \
-        "$STAGE1_CFG" $EXTRA_CONFIG || true
+        "$STAGE1_CFG" $CB_CFG $EXTRA_CONFIG || true
 fi
 
 "$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" \
     --profile "$REPO/profiles/o2" --rerun-triggers mtime \
     -j "$JOBS" ${UNTIL:+--until "$UNTIL"} \
     --config stage1_seed="$SEED" stage2_seed="$SEED" workdir="$WD" publishdir="$PD" \
-    "$STAGE1_CFG" $EXTRA_CONFIG
+    "$STAGE1_CFG" $CB_CFG $EXTRA_CONFIG

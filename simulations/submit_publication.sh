@@ -31,7 +31,10 @@ REPO="${REPO:-$HERE}"
 source "$REPO/lib/publication_common.sh"
 
 : "${ARM:?set ARM to one of: $(tsv_keys "$ARMS_TSV" | tr '\n' ' ')}"
-REPS="${REPS:-1 2 3 4 5}"
+# From the deep-history table, not a literal: the manifest's --reps default comes
+# from the same place, so a wave and a manifest cannot silently disagree about how
+# many replicates exist.
+REPS="${REPS:-$(replicate_list)}"
 CATS="${CATS:-$(tsv_keys "$CATEGORIES_TSV" | tr '\n' ' ')}"
 JOBS="${JOBS:-8}"
 UNTIL="${UNTIL:-}"
@@ -92,6 +95,7 @@ preflight_repo || FAIL=1
 echo
 echo "-- pre-flight: per-run --"
 declare -a RUN_IDS=() RUN_CFG=() RUN_SEED=() RUN_WD=() RUN_PD=() RUN_EXTRA=() RUN_S1=() RUN_DIR_NAMES=()
+declare -a RUN_CB=() RUN_SPECIES=()
 
 for L in $CATS; do
     CFG=$(config_of "$L") || { echo "  ERROR: unknown category '$L'" >&2; FAIL=1; continue; }
@@ -122,6 +126,17 @@ for L in $CATS; do
         done
         CE=$(category_extra "$L")
         [[ -n "$CE" ]] && EXTRA+="$CE "
+
+        # The deep history is per-REPLICATE, so it cannot live in EXTRA (which is
+        # the arm, by contract) or in category_extra (which is the category).
+        # Human never gets it: nothing on the human path reads it, and a config
+        # key that is silently ignored is how a run ends up not being the run
+        # someone thinks they ran.
+        SP=$(species_of "$L") || { FAIL=1; continue; }
+        CB=""
+        if [[ "$SP" == "cattle" ]]; then
+            CB=$(cattle_baseline_seed_of "$R") || { FAIL=1; continue; }
+        fi
         # NO TOKEN MAY CONTAIN A SPACE: EXTRA is expanded unquoted on the
         # snakemake command line so each key=value becomes its own --config arg.
         if grep -q "= \|=$" <<<"$EXTRA"; then
@@ -133,6 +148,7 @@ for L in $CATS; do
         RUN_WD+=("$SCRATCH_ROOT/$ARM/$DIR"); RUN_PD+=("$PUBLISH_ROOT/$ARM/$DIR")
         RUN_EXTRA+=("$EXTRA"); RUN_S1+=("$STAGE1_INPUTS")
         RUN_DIR_NAMES+=("$DIR")
+        RUN_CB+=("$CB"); RUN_SPECIES+=("$SP")
     done
 done
 
@@ -144,28 +160,61 @@ echo
 echo "-- pre-flight: stage-1 inputs --"
 MANIFEST="$PUBLISH_ROOT/RUNS.tsv"
 if [[ -f "$MANIFEST" ]]; then
-    missing=0
-    # Only the runs THIS invocation submits. Checking the whole arm made a
-    # single-replicate wave refuse because replicates 2-5 were not built yet,
-    # which is the wrong answer for `REPS=1` -- and a pre-flight that refuses
-    # correct requests gets bypassed.
-    while IFS=$'\t' read -r m_arm m_dir m_s1; do
-        [[ "$m_arm" == "$ARM" ]] || continue
-        local_wanted=0
-        for d in "${RUN_DIR_NAMES[@]}"; do [[ "$d" == "$m_dir" ]] && local_wanted=1 && break; done
-        (( local_wanted )) || continue
-        if [[ ! -f "$STAGE1_INPUTS/$m_s1" ]]; then
-            echo "  MISSING $m_s1  (needed by $m_dir)" >&2; missing=1
+    # Iterate the WAVE, not the manifest. The previous version walked manifest
+    # rows and filtered them to the wave, so a run with NO row was never checked
+    # -- and it still printed a pass counting ${#RUN_IDS[@]}. With the manifest at
+    # its old 5-replicate default and a 20-replicate wave, that reported all 120
+    # runs healthy having verified 30.
+    #
+    # One awk pass builds "run_dir -> stage1_file, marks_file, cattle_baseline_seed"
+    # for this arm; bash 3.2 has no associative arrays, and the test suite sources
+    # this library, so a temp file is the portable way to carry it.
+    IDX=$(mktemp)
+    awk -F'\t' -v arm="$ARM" '
+        NR == 1 { for (i = 1; i <= NF; i++) h[$i] = i; next }
+        $h["arm"] == arm {
+            print $h["run_dir"] "\t" $h["stage1_file"] "\t" \
+                  $h["stage1_marks_file"] "\t" $h["cattle_baseline_seed"] }
+    ' "$MANIFEST" > "$IDX"
+
+    missing=0; checked=0
+    for i in "${!RUN_DIR_NAMES[@]}"; do
+        d="${RUN_DIR_NAMES[$i]}"
+        row=$(awk -F'\t' -v d="$d" '$1 == d { print; exit }' "$IDX")
+        if [[ -z "$row" ]]; then
+            echo "  NO MANIFEST ROW for $d" >&2; missing=1; continue
         fi
-    done < <(awk -F'\t' 'NR==1 { for (i=1;i<=NF;i++) h[$i]=i; next }
-                         { print $h["arm"] "\t" $h["run_dir"] "\t" $h["stage1_file"] }' "$MANIFEST")
+        m_s1=$(cut -f2 <<<"$row"); m_marks=$(cut -f3 <<<"$row"); m_cb=$(cut -f4 <<<"$row")
+
+        [[ -f "$STAGE1_INPUTS/$m_s1" ]] || { echo "  MISSING $m_s1  (needed by $d)" >&2; missing=1; }
+
+        # cattle_sel needs BOTH; rules/stage1_cattle_sel.smk requires full AND
+        # marks, and a present .full.ts with a missing marks file does not fail --
+        # it falls through to a fresh SLiM run inside a 4 GB controller.
+        if [[ "$m_marks" != "-" && ! -f "$STAGE1_INPUTS/$m_marks" ]]; then
+            echo "  MISSING $m_marks  (needed by $d)" >&2; missing=1
+        fi
+
+        # The launcher and the manifest must name the SAME deep history, or the
+        # run adopts a stage-1 file built from a different ancestry.
+        want_cb="${RUN_CB[$i]}"; [[ -z "$want_cb" ]] && want_cb="-"
+        if [[ "$m_cb" != "$want_cb" ]]; then
+            echo "  DEEP HISTORY MISMATCH for $d: manifest says $m_cb, launcher says $want_cb" >&2
+            echo "    regenerate RUNS.tsv -- one of them is stale" >&2
+            missing=1
+        fi
+        checked=$((checked + 1))
+    done
+    rm -f "$IDX"
+
     if (( missing )); then
         echo "  ERROR: stage-1 inputs incomplete. An unresolved stage-1 path does" >&2
         echo "         not fail loudly -- Snakemake decides it must BUILD the tree" >&2
         echo "         sequence and a multi-hour genetic simulation starts." >&2
         FAIL=1
     else
-        echo "  all stage-1 files for the ${#RUN_IDS[@]} runs in this wave are present"
+        echo "  all stage-1 files for the $checked runs in this wave are present"
+        echo "  (checked $checked of ${#RUN_IDS[@]} wave runs against the manifest)"
     fi
 else
     echo "  ERROR: $MANIFEST not found. Run helpers/write_run_manifests.py first --" >&2
@@ -276,13 +325,20 @@ fi
 
 echo
 for i in "${KEEP_IDX[@]}"; do
+    # sbatch --output/--error cannot create the directory. The controller does
+    # mkdir -p "$WD" itself, but that runs AFTER slurmstepd has tried to open the
+    # log files -- fine while every workdir already existed from a previous wave,
+    # and not fine for the 360 replicate-6-and-up runs whose directories have
+    # never been created.
+    mkdir -p "${RUN_WD[$i]}"
     JID=$(sbatch --parsable \
         --job-name="${RUN_IDS[$i]}_${ARM}" \
         --output="${RUN_WD[$i]}/controller_%j.out" \
         --error="${RUN_WD[$i]}/controller_%j.err" \
-        --export=ALL,REPO="${REPO}",CONFIGFILE="${RUN_CFG[$i]}",SEED="${RUN_SEED[$i]}",WD="${RUN_WD[$i]}",PD="${RUN_PD[$i]}",STAGE1_SRC="${RUN_S1[$i]}",EXTRA_CONFIG="${RUN_EXTRA[$i]}",JOBS="${JOBS}",UNTIL="${UNTIL}" \
+        --export=ALL,REPO="${REPO}",CONFIGFILE="${RUN_CFG[$i]}",SEED="${RUN_SEED[$i]}",WD="${RUN_WD[$i]}",PD="${RUN_PD[$i]}",STAGE1_SRC="${RUN_S1[$i]}",EXTRA_CONFIG="${RUN_EXTRA[$i]}",JOBS="${JOBS}",UNTIL="${UNTIL}",CB_SEED="${RUN_CB[$i]}",SPECIES="${RUN_SPECIES[$i]}" \
         "$REPO/controller_publication.sbatch")
-    printf "  %-3s seed %-3s controller %s\n" "${RUN_IDS[$i]}" "${RUN_SEED[$i]}" "$JID"
+    printf "  %-4s seed %-4s cb %-9s controller %s\n" \
+        "${RUN_IDS[$i]}" "${RUN_SEED[$i]}" "${RUN_CB[$i]:--}" "$JID"
 done
 
 echo

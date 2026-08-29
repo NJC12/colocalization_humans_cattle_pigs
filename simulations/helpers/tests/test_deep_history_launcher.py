@@ -1,0 +1,147 @@
+"""The per-replicate deep-history path, from launcher to snakemake --config.
+
+`cattle_baseline_seed` decides which ancestry a cattle run resumes from, and it
+is the ONLY thing that distinguishes the four deep histories. If it fails to
+reach the command line the run does not error -- it falls back to the config
+YAML's 20250303 and the four histories collapse back into the one shared history
+this work exists to remove, with nothing downstream reporting it.
+
+Source-parsing rather than execution, in the style of `test_launcher_tables.py`
+and `test_cattle_deep_tiers.py`: the wiring is what matters and it cannot be
+exercised without a cluster.
+"""
+
+import os
+import re
+
+import pytest
+
+
+SIM_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _read(name):
+    with open(os.path.join(SIM_DIR, name)) as fh:
+        return fh.read()
+
+
+LAUNCHER = _read("submit_publication.sh")
+CONTROLLER = _read("controller_publication.sbatch")
+COMMON = _read("lib/publication_common.sh")
+
+
+# ------------------------------------------------------- launcher -> sbatch
+
+def test_the_launcher_resolves_the_deep_history_per_replicate():
+    """Inside the replicate loop, not the category loop: E, L, F and G at one
+    replicate share a history, and replicates do not."""
+    assert "cattle_baseline_seed_of \"$R\"" in LAUNCHER
+
+
+def test_only_cattle_gets_a_deep_history():
+    """A config key the human path ignores is a key that can be wrong forever."""
+    m = re.search(r'if \[\[ "\$SP" == "cattle" \]\]; then\s*\n\s*CB=\$\(cattle_baseline_seed_of',
+                  LAUNCHER)
+    assert m, "the deep-history lookup is not gated on species"
+
+
+def test_the_seed_is_exported_to_the_controller():
+    assert 'CB_SEED="${RUN_CB[$i]}"' in LAUNCHER
+    assert 'SPECIES="${RUN_SPECIES[$i]}"' in LAUNCHER
+
+
+def test_the_workdir_is_created_before_sbatch_writes_its_logs():
+    """sbatch --output cannot create the directory, and the controller's own
+    mkdir runs after slurmstepd has already tried to open the file. Harmless
+    while every workdir survived a previous wave; not harmless for the 360
+    replicate-6-and-up runs, whose directories have never existed."""
+    i = LAUNCHER.index('mkdir -p "${RUN_WD[$i]}"')
+    j = LAUNCHER.index('--output="${RUN_WD[$i]}/controller_%j.out"')
+    assert i < j, "mkdir must precede the sbatch that writes into it"
+
+
+def test_the_replicate_default_comes_from_the_table():
+    """A literal here is how the manifest and the wave drift apart."""
+    assert 'REPS="${REPS:-$(replicate_list)}"' in LAUNCHER
+    assert "REPS=\"${REPS:-1 2 3 4 5}\"" not in LAUNCHER
+
+
+# --------------------------------------------------------- the pre-flight
+
+def test_the_preflight_iterates_the_wave_not_the_manifest():
+    """The old version walked manifest rows and filtered them to the wave, so a
+    run with NO row was never checked -- while printing a pass that counted the
+    whole wave. With a 5-replicate manifest and a 20-replicate wave it reported
+    120 runs healthy having verified 30."""
+    assert 'for i in "${!RUN_DIR_NAMES[@]}"' in LAUNCHER
+    assert "NO MANIFEST ROW" in LAUNCHER
+
+
+def test_the_preflight_checks_the_marks_file():
+    """rules/stage1_cattle_sel.smk requires the marks file AND the .full.ts. A
+    present full file with a missing marks file falls through to a fresh SLiM
+    run inside a 4 GB controller."""
+    assert "m_marks" in LAUNCHER
+    assert "stage1_marks_file" in LAUNCHER
+
+
+def test_the_preflight_compares_the_deep_history_to_the_manifest():
+    assert "DEEP HISTORY MISMATCH" in LAUNCHER
+
+
+def test_the_preflight_reports_what_it_actually_checked():
+    """The old pass line counted ${#RUN_IDS[@]} regardless of how many rows it
+    had inspected, which is what made the hole invisible."""
+    assert "checked $checked of ${#RUN_IDS[@]}" in LAUNCHER
+
+
+# ------------------------------------------------- controller -> snakemake
+
+def test_the_controller_refuses_a_cattle_run_without_a_deep_history():
+    assert "a cattle run needs CB_SEED" in CONTROLLER
+    assert "exit 1" in CONTROLLER.split("a cattle run needs CB_SEED")[1][:600]
+
+
+def test_the_seed_reaches_both_snakemake_invocations():
+    """The --unlock call and the real call. A stale claim takes the unlock path
+    first, and a mismatch between the two would unlock one DAG and run another."""
+    calls = [l for l in CONTROLLER.splitlines() if '"$STAGE1_CFG"' in l]
+    assert len(calls) == 2, calls
+    for line in calls:
+        assert "$CB_CFG" in line
+
+
+def test_the_controller_forbids_building_a_deep_history():
+    """cattle_baseline_search_dirs=[] , not the deep-history directory. Stage 1
+    is always adopted here; with the directory listed, a missing stage-1 file
+    would start a ~2 h SLiM run inside a controller sized for symlinks."""
+    assert "cattle_baseline_search_dirs=[]" in CONTROLLER
+
+
+def test_the_deep_history_config_is_a_single_space_separated_token_list():
+    """EXTRA_CONFIG and CB_CFG are expanded UNQUOTED so each key=value becomes
+    its own --config argument. A token containing a space would silently become
+    two arguments."""
+    vals = re.findall(r'CB_CFG="([^"]*)"', CONTROLLER)
+    assert vals, "no CB_CFG assignment found"
+    body = [v for v in vals if v]          # the empty init is the other one
+    assert len(body) == 1, vals
+    for tok in body[0].split():
+        assert "=" in tok and not tok.endswith("=")
+
+
+# ------------------------------------------------------------ the library
+
+def test_the_deep_histories_live_outside_stage1_inputs():
+    """One directory holding both would put four ep7 handoffs next to the
+    stage-1 files, and search_dirs._seed_collision_check cannot catch a wrong
+    pick among them: its glob rewrites seed_<N> to sd*, which matches no
+    seed_-named file."""
+    assert 'DEEP_HISTORIES="${DEEP_HISTORIES:-$PUBLISH_ROOT/deep_histories}"' in COMMON
+
+
+def test_the_library_stays_bash_3_2_clean():
+    """The test suite sources this file, and macOS ships bash 3.2.57 -- no
+    associative arrays, no ${x,,}."""
+    assert "declare -A" not in COMMON
+    assert not re.search(r"\$\{[A-Za-z_][A-Za-z0-9_]*,,\}", COMMON)

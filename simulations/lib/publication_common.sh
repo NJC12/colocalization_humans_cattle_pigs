@@ -21,6 +21,14 @@ CELL="${CELL:-g5t20}"
 
 CATEGORIES_TSV="$REPO/helpers/publication_categories.tsv"
 ARMS_TSV="$REPO/helpers/publication_arms.tsv"
+DEEP_HISTORIES_TSV="$REPO/helpers/publication_deep_histories.tsv"
+
+# The rescaled end-of-epoch-7 checkpoints the cattle replicates resume from.
+# DELIBERATELY NOT stage1_inputs/: if they shared a directory then
+# stage1_search_dirs and cattle_baseline_search_dirs would be one path holding
+# four handoffs, and search_dirs._seed_collision_check cannot catch a wrong pick
+# among them -- its glob rewrites seed_<N> to sd*, which matches no seed_ file.
+DEEP_HISTORIES="${DEEP_HISTORIES:-$PUBLISH_ROOT/deep_histories}"
 
 # ---------------------------------------------------------------- table access
 
@@ -43,6 +51,28 @@ tsv_keys() {
 
 cat_field()  { tsv_field "$CATEGORIES_TSV" "$1" "$2"; }
 arm_field()  { tsv_field "$ARMS_TSV" "$1" "$2"; }
+dh_field()   { tsv_field "$DEEP_HISTORIES_TSV" "$1" "$2"; }
+
+# Every replicate the set defines, in table order. The launcher's REPS default
+# and write_run_manifests' --reps default both come from here, so a wave and a
+# manifest can never silently disagree about how many replicates exist.
+replicate_list() { tsv_keys "$DEEP_HISTORIES_TSV" | tr "\n" " "; }
+
+# The deep history replicate N resumes from. Cattle only -- nothing on the human
+# path reads it, and a key that is silently ignored is how a run ends up not
+# being the run someone thinks they ran.
+cattle_baseline_seed_of() {
+    local cb
+    if ! cb=$(dh_field "$1" cattle_baseline_seed); then
+        echo "ERROR: replicate $1 has no row in publication_deep_histories.tsv." >&2
+        echo "       Without one the run would fall back to the config YAML's" >&2
+        echo "       20250303 and the independent deep histories would silently" >&2
+        echo "       collapse back to one." >&2
+        return 1
+    fi
+    echo "$cb"
+}
+deep_history_handoff_of() { dh_field "$1" handoff_file; }
 
 # The published directory name for a category letter, and its inverse.
 category_dir_of() { cat_field "$1" dir_name; }
@@ -106,7 +136,16 @@ preflight_repo() {
     # disagreement found, and the run carry on regardless.
     require_marker "except ValueError:" Snakefile                || rc=1
     require_marker "_fm_thins_candidates" rules/common.smk       || rc=1
+    # The cattle deep history must be visible in the F/G stage-1 filename. Without
+    # the segment, two histories at one stage1_seed write the same .full.ts, the
+    # same .m4_marks.tsv and the same stage2_run_tag, and cattle_baseline_seed is
+    # not in params_record.STAGE2_KEYS either -- so nothing anywhere separates them.
+    require_marker "cattle_baseline_segment" helpers/paths.py    || rc=1
+    # And it must reach the command line, or every replicate silently resumes from
+    # the config YAML's single 20250303 history.
+    require_marker "CB_SEED" controller_publication.sbatch       || rc=1
     for f in helpers/publication_categories.tsv helpers/publication_arms.tsv \
+             helpers/publication_deep_histories.tsv \
              controller_publication.sbatch helpers/write_run_manifests.py; do
         [[ -f "$REPO/$f" ]] || { echo "ERROR: missing $REPO/$f" >&2; rc=1; }
     done

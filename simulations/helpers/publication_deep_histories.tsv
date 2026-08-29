@@ -1,0 +1,75 @@
+# Which cattle deep history each replicate resumes from.
+#
+# A DEEP HISTORY is an independent original population + 30,000-tick burn-in +
+# epochs 1-7, rescaled from Q=1 to Q=0.01 -- everything upstream of the
+# end-of-epoch-7 handoff that E, L, F and G all resume from. Through the
+# 5-replicate publication set every cattle replicate shared ONE of these
+# (cattle_baseline_seed 20250303), so the cattle arms carried exactly one
+# ancestral genealogy: 33,130 of 33,154 generations were common to all of them
+# and only epochs 8-12 (24 generations) were simulated per replicate. Their
+# replicate spread therefore sampled the terminal bottleneck and the trait draw,
+# not the between-population variance the human arm's spread samples. This table
+# is what makes that no longer true, and it is the record of which seeds were
+# used to do it.
+#
+# KEYED BY REPLICATE, NEVER BY CATEGORY. E, L, F and G at the same replicate MUST
+# share a deep history: that is what makes E-vs-F-vs-G at replicate r a comparison
+# of selection regimes on ONE genealogy rather than three simulations differing in
+# everything. One row per replicate rather than per block, so changing the block
+# size later edits a column instead of the schema.
+#
+# Replicates 1-5 keep 20250303. That is not sentiment: 4 arms x 4 cattle
+# categories x 5 replicates = 80 finished runs are named for the stage-1 files
+# that history produced, and a stage-1 filename that moves is a run that has been
+# orphaned. helpers/paths.cattle_baseline_segment is suppressed at this value for
+# the same reason.
+#
+# Deep-history seeds keep the YYYYMMDD convention 20250303 already follows. They
+# are 8-digit, so they cannot be confused with a stage-1 seed (2-3 digits), and
+# they are < 2^32, so msprime's random_seed and the seed+1 used for the mutation
+# overlay in farm_create_orig_pop_e2.py are both valid.
+#
+# ANALYSIS CONSEQUENCE. Four ancestries against the human arm's twenty means
+# cattle replicates are NESTED within deep history and are not exchangeable.
+# summarize_coloc pools replicates flat and its grouping key does not carry the
+# deep history -- correctly, since these are replicates -- so a cattle interval
+# computed that way is roughly sqrt(5) = 2.2x too narrow. Estimate cattle
+# between-population variance at the BLOCK level (n=4), or state that it is not
+# estimated.
+#
+# Columns
+#   replicate             1..20; the key
+#   cattle_baseline_seed  stage1_seed the deep-history chain was built at, and the
+#                         `seed_` component of the handoff filename
+#   handoff_file          the Q=0.01 end-of-epoch-7 checkpoint replicates resume
+#                         from; must equal paths.stage1_cattle_baseline_handoff
+#   built_from            config the chain was built from
+#
+# The MEASURED provenance (sha256, bytes, build date, git commit) is NOT here: it
+# cannot be known until the chain has run, and preflight_repo refuses a dirty
+# tree. It lives in <deep histories dir>/PROVENANCE.tsv, written by
+# rebuild_cattle_deep_history.sh --collect.
+#
+# Tab-separated. Lines starting with # and blank lines are ignored.
+#
+replicate	cattle_baseline_seed	handoff_file	built_from
+1	20250303	farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+2	20250303	farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+3	20250303	farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+4	20250303	farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+5	20250303	farm_selection_Q_0.01.L_2000000.seed_20250303.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+6	20260901	farm_selection_Q_0.01.L_2000000.seed_20260901.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+7	20260901	farm_selection_Q_0.01.L_2000000.seed_20260901.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+8	20260901	farm_selection_Q_0.01.L_2000000.seed_20260901.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+9	20260901	farm_selection_Q_0.01.L_2000000.seed_20260901.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+10	20260901	farm_selection_Q_0.01.L_2000000.seed_20260901.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+11	20260902	farm_selection_Q_0.01.L_2000000.seed_20260902.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+12	20260902	farm_selection_Q_0.01.L_2000000.seed_20260902.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+13	20260902	farm_selection_Q_0.01.L_2000000.seed_20260902.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+14	20260902	farm_selection_Q_0.01.L_2000000.seed_20260902.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+15	20260902	farm_selection_Q_0.01.L_2000000.seed_20260902.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+16	20260903	farm_selection_Q_0.01.L_2000000.seed_20260903.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+17	20260903	farm_selection_Q_0.01.L_2000000.seed_20260903.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+18	20260903	farm_selection_Q_0.01.L_2000000.seed_20260903.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+19	20260903	farm_selection_Q_0.01.L_2000000.seed_20260903.ep7.ts	config/cattle_baseline_2Mb_r3.yaml
+20	20260903	farm_selection_Q_0.01.L_2000000.seed_20260903.ep7.ts	config/cattle_baseline_2Mb_r3.yaml

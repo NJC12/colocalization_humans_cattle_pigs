@@ -459,6 +459,46 @@ def stage1_cattle_baseline_from_midpoint_full(cfg):
     return f"farm_selection_from_ep8.Q_{Q}.L_{L}.cb_{cb}.seed_{s1}.full.ts"
 
 
+#: The one cattle deep history every publication run through the 5-replicate set
+#: resumed from. Suppressed in the path for exactly the reason
+#: LEGACY_CAUSAL_MIN_MAF is: it is a fact about what is already on disk, so those
+#: paths stay reachable.
+LEGACY_CATTLE_BASELINE_SEED = 20250303
+
+
+def cattle_baseline_segment(cfg):
+    """Path segment naming the cattle deep history, else ``""``.
+
+    ``cattle_baseline_seed`` determines stage-1 CONTENT -- it is the entire
+    ancestry the run resumes from, 33,130 of 33,154 generations -- but for the
+    ``cattle_sel`` pipeline it appears in no filename at all. Two F runs at the
+    same ``stage1_seed`` off different deep histories therefore write the same
+    ``.full.ts``, the same ``.m4_marks.tsv``, the same ``stage2_run_tag``, and
+    after publishing the same files in the same directory, with nothing to tell
+    them apart. ``cattle_baseline_seed`` is not in ``params_record.STAGE2_KEYS``
+    either, so the provenance guard cannot separate them; the sidecar records the
+    stage-1 tree sequence by NAME, which is precisely what this segment fixes.
+
+    (``stage1_cattle_baseline_from_midpoint_full`` has never had the problem: it
+    carries ``cb_{cb}`` unconditionally, so E and L were always distinguishable.)
+
+    Emitted only when the seed is not ``LEGACY_CATTLE_BASELINE_SEED``, so every F
+    and G output written before four deep histories existed is byte-identical
+    under this change and no finished run moves. Same construction as
+    ``causal_maf_segment``, ``causal_sampling_segment``, ``trait_count_segment``,
+    ``neutral_thin_segment`` and ``require_gtex_partner_segment``.
+
+    Placed AFTER ``_sd{seed}`` so ``search_dirs._extract_seed``'s first match is
+    still the stage-1 seed, and so the collision glob becomes
+    ``..._sd*_cb{cb}...`` -- scoped to one deep history rather than reporting a
+    sibling history's file as a seed conflict.
+    """
+    cb = cfg.get("cattle_baseline_seed")
+    if cb is None or str(cb) == str(LEGACY_CATTLE_BASELINE_SEED):
+        return ""
+    return f"_cb{cb}"
+
+
 def stage1_cattle_sel_full(cfg):
     """Output of farm_selection_from_ep8.slim (num_muts_selected > 0) — cattle+selection full TS."""
     base = cfg["basename"]
@@ -466,7 +506,8 @@ def stage1_cattle_sel_full(cfg):
     gen = cfg["selected_generations"]
     muts = cfg["num_muts_selected"]
     s1 = cfg["stage1_seed"]
-    return f"{base}_mult{mult}_gen{gen}_muts{muts}_sd{s1}.full.ts"
+    return (f"{base}_mult{mult}_gen{gen}_muts{muts}_sd{s1}"
+            f"{cattle_baseline_segment(cfg)}.full.ts")
 
 
 def stage1_cattle_sel_marks(cfg):
@@ -475,7 +516,8 @@ def stage1_cattle_sel_marks(cfg):
     gen = cfg["selected_generations"]
     muts = cfg["num_muts_selected"]
     s1 = cfg["stage1_seed"]
-    return f"{base}_mult{mult}_gen{gen}_muts{muts}_sd{s1}.m4_marks.tsv"
+    return (f"{base}_mult{mult}_gen{gen}_muts{muts}_sd{s1}"
+            f"{cattle_baseline_segment(cfg)}.m4_marks.tsv")
 
 
 def stage1_full_filename(cfg):
