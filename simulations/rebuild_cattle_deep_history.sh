@@ -44,11 +44,24 @@ source "$REPO/lib/publication_common.sh"
 SNAKEMAKE="${SNAKEMAKE:-/home/njc12/miniconda3/envs/coloc_sims/bin/snakemake}"
 PYTHON="${PYTHON:-/home/njc12/miniconda3/envs/coloc_sims/bin/python}"
 CFG="${CFG:-config/cattle_baseline_2Mb_r3.yaml}"
-WD="${WD:-$SCRATCH_ROOT/deep_history/cattle_baseline}"
 # The archived deep history, for --check only. Never written to.
 ARCHIVE_WD="${ARCHIVE_WD:-/n/scratch/users/n/njc12/snakemake/simulations_round_3_2Mb/cattle_baseline}"
 
-CB_SEED=$(awk '/^stage1_seed:/{print $2; exit}' "$REPO/$CFG")
+# ACCEPTED, not just derived. The seed used to be read out of the config and used
+# only to spell filenames for --rescale/--check -- it was never passed to
+# Snakemake at all (the --config list below carried workdir and publishdir and
+# nothing else), so this script could build exactly one deep history: the one its
+# configfile named. Four independent histories need four seeds.
+CB_SEED="${CB_SEED:-$(awk '/^stage1_seed:/{print $2; exit}' "$REPO/$CFG")}"
+
+# Per-seed workdir. The tree-sequence FILENAMES already carry the seed, but the
+# workdir does not, and everything else under it is shared: .snakemake/locks,
+# .snakemake/iocache, slurm_logs, params/, and the three rules' log: paths
+# (rules/stage1_cattle_baseline.smk:86,152,210) which are workdir-relative and
+# NOT seed-namespaced. Concurrent builds in one workdir would collide on all of
+# them. Same shape as validate_handoff.sbatch:43, which already builds five
+# independent histories this way.
+WD="${WD:-$SCRATCH_ROOT/deep_history/cattle_baseline_seed_$CB_SEED}"
 Q_DEEP=$(awk '/^Q_scaling:/{print $2; exit}' "$REPO/$CFG")
 L_VAL=$(awk '/^L:/{print $2; exit}' "$REPO/$CFG")
 EP7="farm_selection_Q_${Q_DEEP}.L_${L_VAL}.seed_${CB_SEED}.ep7.ts"
@@ -99,16 +112,20 @@ echo
 # Snakemake sequences them and -j 2 is plenty. `long` because the burn-in rule
 # declares a 30-day walltime for the Q=0.01 case even though this Q=1 run needs
 # under an hour -- the declaration is what SLURM sees.
+# stage1_seed IS the deep history: farm_create_orig_pop_e2.py seeds the coalescent
+# genealogy with it, the mutation overlay with seed+1, and the DFE permutation from
+# the same generator, and both SLiM stages take it as -s. Without it on BOTH
+# --config lists every invocation rebuilds the configfile's 20250303.
 JID=$(sbatch --parsable \
-    --job-name=rebuild_cattle_deep_history \
+    --job-name="deep_history_$CB_SEED" \
     --partition=medium --time=1-00:00:00 --mem=8G --cpus-per-task=1 \
     --output="$WD/rebuild_%j.out" --error="$WD/rebuild_%j.err" \
     --wrap="cd '$WD' && '$SNAKEMAKE' --snakefile '$REPO/Snakefile' \
         --configfile '$REPO/$CFG' --unlock \
-        --config workdir='$WD' publishdir='$WD' || true; \
+        --config stage1_seed=$CB_SEED stage2_seed=$CB_SEED workdir='$WD' publishdir='$WD' || true; \
         '$SNAKEMAKE' --snakefile '$REPO/Snakefile' --configfile '$REPO/$CFG' \
         --profile '$REPO/profiles/o2' --rerun-triggers mtime -j 2 --until stage1 \
-        --config workdir='$WD' publishdir='$WD'")
+        --config stage1_seed=$CB_SEED stage2_seed=$CB_SEED workdir='$WD' publishdir='$WD'")
 
 echo "controller $JID"
 echo

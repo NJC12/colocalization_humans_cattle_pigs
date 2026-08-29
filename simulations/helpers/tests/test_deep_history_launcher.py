@@ -145,3 +145,36 @@ def test_the_library_stays_bash_3_2_clean():
     associative arrays, no ${x,,}."""
     assert "declare -A" not in COMMON
     assert not re.search(r"\$\{[A-Za-z_][A-Za-z0-9_]*,,\}", COMMON)
+
+
+# ------------------------------------------- the deep-history builder itself
+
+REBUILD = _read("rebuild_cattle_deep_history.sh")
+
+
+def test_the_seed_reaches_snakemake():
+    """THE BUG. The seed was read out of the configfile and used only to spell
+    filenames for --rescale/--check; the --config list carried workdir and
+    publishdir and nothing else. So the script could build exactly one deep
+    history -- the one its configfile named -- and asking it for another would
+    have silently rebuilt 20250303 under a different name."""
+    wrap = REBUILD[REBUILD.index("--wrap="):]
+    assert wrap.count("stage1_seed=$CB_SEED") == 2, \
+        "both the --unlock and the real invocation must carry the seed"
+
+
+def test_the_seed_is_accepted_from_the_environment():
+    assert 'CB_SEED="${CB_SEED:-$(awk' in REBUILD
+
+
+def test_the_workdir_is_seed_namespaced():
+    """Filenames carry the seed; the workdir did not, and everything else under
+    it is shared -- .snakemake locks and iocache, slurm_logs, params/, and the
+    three rules' workdir-relative log: paths. Concurrent builds would collide."""
+    m = re.search(r'^WD="\$\{WD:-([^"]*)\}"', REBUILD, re.M)
+    assert m, "no WD default found"
+    assert "$CB_SEED" in m.group(1), m.group(1)
+
+
+def test_concurrent_builds_are_distinguishable_in_the_queue():
+    assert '--job-name="deep_history_$CB_SEED"' in REBUILD
