@@ -234,3 +234,16 @@ def test_a_finished_run_is_skipped_not_refused():
     i = LAUNCHER.index("already has the full stage-4 output")
     assert "skipped_done" in LAUNCHER[i - 400:i + 400]
     assert "FAIL=1" not in LAUNCHER[i - 300:i + 300]
+
+
+def test_the_enloc_count_cannot_silently_exit_the_launcher():
+    """`set -euo pipefail` + `ls | wc -l` = a silent exit when a run has ZERO
+    enloc files: ls exits non-zero, pipefail propagates, the assignment fails
+    and -e kills the script mid-loop having submitted nothing. That happened --
+    the resume wave logged its SKIP/RESUME lines and then just stopped. Counted
+    with a glob array instead; an unmatched glob stays literal so -f is false."""
+    i = LAUNCHER.index("ENLOC_HITS=(")
+    window = LAUNCHER[i - 200:i + 400]
+    assert "ls -1" not in window
+    assert "wc -l" not in window
+    assert 'for f in "${ENLOC_HITS[@]}"' in window

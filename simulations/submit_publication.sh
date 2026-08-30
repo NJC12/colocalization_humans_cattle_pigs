@@ -276,13 +276,22 @@ ENLOC_PER_RUN=2      # gwas x {gtex, gtex_smaller}; publish_to_data2.sh wants th
 declare -a RESUME_IDX=()
 skipped_done=0; resuming=0
 for i in "${KEEP_IDX[@]}"; do
-    n=$(ls -1 "${RUN_WD[$i]}"/stage4/*/*.enloc.sig.out 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "${n:-0}" -ge "$ENLOC_PER_RUN" ]]; then
+    # Counted with a glob array, NOT `ls | wc -l`. This script runs under
+    # `set -euo pipefail`: when a run has ZERO enloc files `ls` exits non-zero,
+    # pipefail propagates it, the assignment fails and -e exits the script
+    # SILENTLY mid-loop, having submitted nothing. That is the same silent-exit
+    # trap the queue-headroom check below documents, and it happened here too --
+    # the log ended after the last matching run with no error anywhere. An
+    # unmatched glob stays literal, so `-f` is false and n stays 0.
+    ENLOC_HITS=( "${RUN_WD[$i]}"/stage4/*/*.enloc.sig.out )
+    n=0
+    for f in "${ENLOC_HITS[@]}"; do [[ -f "$f" ]] && n=$((n+1)); done
+    if [[ "$n" -ge "$ENLOC_PER_RUN" ]]; then
         printf "  SKIP %-4s already has the full stage-4 output (%s/%s)\n" \
             "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
         skipped_done=$((skipped_done+1))
     else
-        [[ "${n:-0}" -gt 0 ]] && {
+        [[ "$n" -gt 0 ]] && {
             printf "  RESUME %-4s partial stage-4 output (%s/%s); Snakemake will finish it\n" \
                 "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
             resuming=$((resuming+1))
