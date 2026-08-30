@@ -259,15 +259,43 @@ fi
 
 echo
 echo "-- pre-flight: nothing to overwrite --"
-existing=0
+# SKIP the finished, RESUME the partial. The predicate used to be "holds ANY
+# stage-4 output -> refuse the whole wave", which conflated two opposite cases.
+#
+# `keep-going: True` means a controller can exit COMPLETED having lost one panel
+# to a walltime kill, leaving 1 of 2 .enloc.sig.out. That run is exactly the one
+# that must be relaunched -- Snakemake rebuilds only what is missing, so a
+# relaunch is a cheap resume -- and the old check refused it, which is how a
+# truncated wave became unfinishable without hand-editing the launcher. Measured:
+# block 2 (replicates 6-10) came back with 30 of 120 runs in that state.
+#
+# A run with the FULL set is skipped rather than refused, matching the live-lock
+# skip above: refusing the whole arm because part of it is already done is the
+# wrong answer to a relaunch.
+ENLOC_PER_RUN=2      # gwas x {gtex, gtex_smaller}; publish_to_data2.sh wants the same 2
+declare -a RESUME_IDX=()
+skipped_done=0; resuming=0
 for i in "${KEEP_IDX[@]}"; do
-    if compgen -G "${RUN_WD[$i]}/stage4/*/*.enloc.sig.out" >/dev/null 2>&1; then
-        echo "  ${RUN_IDS[$i]}: ${RUN_WD[$i]} already holds stage-4 output" >&2
-        existing=1
+    n=$(ls -1 "${RUN_WD[$i]}"/stage4/*/*.enloc.sig.out 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${n:-0}" -ge "$ENLOC_PER_RUN" ]]; then
+        printf "  SKIP %-4s already has the full stage-4 output (%s/%s)\n" \
+            "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
+        skipped_done=$((skipped_done+1))
+    else
+        [[ "${n:-0}" -gt 0 ]] && {
+            printf "  RESUME %-4s partial stage-4 output (%s/%s); Snakemake will finish it\n" \
+                "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
+            resuming=$((resuming+1))
+        }
+        RESUME_IDX+=("$i")
     fi
 done
-(( existing )) && { echo "  refusing to overwrite finished output; move it aside or pick another ARM" >&2; FAIL=1; }
-(( existing )) || echo "  clear"
+KEEP_IDX=("${RESUME_IDX[@]+"${RESUME_IDX[@]}"}")
+if (( skipped_done || resuming )); then
+    echo "  skipping $skipped_done finished run(s), resuming $resuming partial one(s)"
+else
+    echo "  clear"
+fi
 
 echo
 echo "-- pre-flight: queue headroom --"

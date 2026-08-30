@@ -212,3 +212,25 @@ def test_regen_staleness_compares_against_the_right_handoff():
     """One reference would compare every replicate against block 1's handoff and
     report blocks 2-4 stale."""
     assert 'HANDOFF_REF="$DEEP_HISTORIES/$(deep_history_handoff_of "${ID:1}")"' in REGEN
+
+
+# --------------------------------------------- relaunching a truncated wave
+
+def test_a_partially_finished_run_is_resumed_not_refused():
+    """`keep-going: True` lets a controller exit COMPLETED having lost one panel
+    to a walltime kill, leaving 1 of 2 .enloc.sig.out. That run is exactly the
+    one that must be relaunched, and the old predicate ("holds ANY stage-4
+    output -> refuse the whole wave") refused it -- which made a truncated wave
+    unfinishable without hand-editing the launcher. Block 2 came back with 30 of
+    120 runs in that state."""
+    assert "RESUME" in LAUNCHER
+    assert "ENLOC_PER_RUN=2" in LAUNCHER
+    assert "refusing to overwrite finished output" not in LAUNCHER
+
+
+def test_a_finished_run_is_skipped_not_refused():
+    """Same reasoning as the live-lock skip: refusing the whole arm because part
+    of it is already done is the wrong answer to a relaunch."""
+    i = LAUNCHER.index("already has the full stage-4 output")
+    assert "skipped_done" in LAUNCHER[i - 400:i + 400]
+    assert "FAIL=1" not in LAUNCHER[i - 300:i + 300]
