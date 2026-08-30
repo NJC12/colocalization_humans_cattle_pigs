@@ -228,10 +228,19 @@ def test_a_partially_finished_run_is_resumed_not_refused():
     assert "refusing to overwrite finished output" not in LAUNCHER
 
 
+def test_completeness_covers_stage_five_not_just_stage_four():
+    """A run can have both .enloc.sig.out and still be short a stage-5 panel --
+    7 of block 2's 30 incomplete runs read `glmleads=2/want3` with no enloc
+    complaint. Skipping on enloc alone would leave those unfinishable."""
+    assert "GLM_PER_RUN=3" in LAUNCHER
+    i = LAUNCHER.index("GLM_HITS=(")
+    assert '"$g" -ge "$GLM_PER_RUN"' in LAUNCHER[i:i + 500]
+
+
 def test_a_finished_run_is_skipped_not_refused():
     """Same reasoning as the live-lock skip: refusing the whole arm because part
     of it is already done is the wrong answer to a relaunch."""
-    i = LAUNCHER.index("already has the full stage-4 output")
+    i = LAUNCHER.index("already complete (enloc")
     assert "skipped_done" in LAUNCHER[i - 400:i + 400]
     assert "FAIL=1" not in LAUNCHER[i - 300:i + 300]
 

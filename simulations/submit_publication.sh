@@ -272,7 +272,13 @@ echo "-- pre-flight: nothing to overwrite --"
 # A run with the FULL set is skipped rather than refused, matching the live-lock
 # skip above: refusing the whole arm because part of it is already done is the
 # wrong answer to a relaunch.
-ENLOC_PER_RUN=2      # gwas x {gtex, gtex_smaller}; publish_to_data2.sh wants the same 2
+# The same expected counts publish_to_data2.sh's complete_p gate uses. Checking
+# only enloc was not enough: a run can have both .enloc.sig.out and still be
+# short a stage-5 panel (measured: 7 of block 2's 30 incomplete runs read
+# `glmleads=2/want3; stage5done=2/want3` with no enloc complaint at all), and
+# those would be skipped here and never finished.
+ENLOC_PER_RUN=2      # gwas x {gtex, gtex_smaller}
+GLM_PER_RUN=3        # the three analysed panels
 declare -a RESUME_IDX=()
 skipped_done=0; resuming=0
 for i in "${KEEP_IDX[@]}"; do
@@ -286,14 +292,17 @@ for i in "${KEEP_IDX[@]}"; do
     ENLOC_HITS=( "${RUN_WD[$i]}"/stage4/*/*.enloc.sig.out )
     n=0
     for f in "${ENLOC_HITS[@]}"; do [[ -f "$f" ]] && n=$((n+1)); done
-    if [[ "$n" -ge "$ENLOC_PER_RUN" ]]; then
-        printf "  SKIP %-4s already has the full stage-4 output (%s/%s)\n" \
-            "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
+    GLM_HITS=( "${RUN_WD[$i]}"/stage5/*/*_glm_lead_snps.tsv )
+    g=0
+    for f in "${GLM_HITS[@]}"; do [[ -f "$f" ]] && g=$((g+1)); done
+    if [[ "$n" -ge "$ENLOC_PER_RUN" && "$g" -ge "$GLM_PER_RUN" ]]; then
+        printf "  SKIP %-4s already complete (enloc %s/%s, glm %s/%s)\n" \
+            "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN" "$g" "$GLM_PER_RUN"
         skipped_done=$((skipped_done+1))
     else
-        [[ "$n" -gt 0 ]] && {
-            printf "  RESUME %-4s partial stage-4 output (%s/%s); Snakemake will finish it\n" \
-                "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN"
+        [[ "$n" -gt 0 || "$g" -gt 0 ]] && {
+            printf "  RESUME %-4s partial (enloc %s/%s, glm %s/%s); Snakemake will finish it\n" \
+                "${RUN_IDS[$i]}" "$n" "$ENLOC_PER_RUN" "$g" "$GLM_PER_RUN"
             resuming=$((resuming+1))
         }
         RESUME_IDX+=("$i")
