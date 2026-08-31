@@ -29,6 +29,18 @@ compares.
 - **Replicate spread** — grouped by category, then by a labelled lane per
   sampling strategy. One mark per replicate with the mean, so a difference can
   be read against the scatter it sits in.
+- **Allele frequency by selection strength** — box-and-whisker of every GWAS-panel
+  variant's MAF, split by selection-coefficient bin. The panel is a property of a
+  category and replicate, not of a sampling strategy (verified: the three
+  15-replicate arms report identical variant counts), so it is pooled over
+  strategies with each replicate counted once. Keying it per arm would count each
+  panel four times and let the arm with fewer finished replicates reweight the
+  distribution.
+- **Outcome by causal-variant frequency** — stacked bars of what happened to each
+  GWAS locus (correct / wrong-only / nothing) against the MAF bin of its causal
+  variant, pooled over the selected categories and strategies. The trait-to-variant
+  join goes through the trait id, which encodes the position (`tr527466` ↔ position
+  527466).
 - **Cattle ancestry blocks** — power per deep history. Cattle replicates come in
   blocks of five that each resume from an independently simulated ancestry;
   human replicates are each their own population, so their blocks are an
@@ -69,5 +81,9 @@ own summary — 0 mismatches. Worth repeating on any rebuild.
 ## Files
 
 - `publication_dashboard.html` — standalone, open directly in a browser.
+- `build_maf_aggregates.py` — runs on O2; produces the MAF/selection and
+  outcome/MAF aggregates the last two plots embed. Reads ~11M variant rows and
+  emits quantiles from a 0.001-resolution histogram rather than holding every
+  value.
 - `publication_dashboard.fragment.html` — same page without the document
   wrapper, which is the form the Artifact publisher takes.
