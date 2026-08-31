@@ -19,19 +19,22 @@ A *cell* is one simulation category inside one causal-sampling strategy, pooled
 over that strategy's finished replicates — the same unit the older dashboard
 compares.
 
-- **Category × strategy matrix** — power with FDR beside it, bar length encoding
-  power, coloured by species. The `n` column is the replicate count, and it is
-  highlighted when a row's strategies pool different numbers of replicates.
-- **Strategy comparison** — grouped bars, switchable between power and FDR.
-- **Replicate spread** — one mark per replicate with the mean, so a difference
-  can be read against the scatter it sits in.
+- **Filters** — checkboxes for each of the six categories and each of the four
+  sampling strategies, with all/none shortcuts. They scope every view below.
+- **Category × strategy matrix** — each cell is two-sided about a shared zero:
+  **power** grows rightward, **FDR** grows leftward, both on a 0–100% scale, so
+  a cell that is good on both counts reads as a short left arm and a long right
+  one. The `n` column is the replicate count, highlighted when a row's
+  strategies pool different numbers.
+- **Replicate spread** — grouped by category, then by a labelled lane per
+  sampling strategy. One mark per replicate with the mean, so a difference can
+  be read against the scatter it sits in.
 - **Cattle ancestry blocks** — power per deep history. Cattle replicates come in
   blocks of five that each resume from an independently simulated ancestry;
   human replicates are each their own population, so their blocks are an
   arbitrary split and act as a noise reference.
 
-Global controls (eQTL panel size, RCP cutoff, chart metric) scope everything at
-once.
+Global controls (eQTL panel size, RCP cutoff) scope everything at once.
 
 ## Definitions
 
