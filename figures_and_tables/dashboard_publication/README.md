@@ -29,18 +29,30 @@ compares.
 - **Replicate spread** — grouped by category, then by a labelled lane per
   sampling strategy. One mark per replicate with the mean, so a difference can
   be read against the scatter it sits in.
-- **Allele frequency by selection strength** — box-and-whisker of every GWAS-panel
-  variant's MAF, split by selection-coefficient bin. The panel is a property of a
-  category and replicate, not of a sampling strategy (verified: the three
-  15-replicate arms report identical variant counts), so it is pooled over
-  strategies with each replicate counted once. Keying it per arm would count each
-  panel four times and let the arm with fewer finished replicates reweight the
-  distribution.
-- **Outcome by causal-variant frequency** — stacked bars of what happened to each
-  GWAS locus (correct / wrong-only / nothing) against the MAF bin of its causal
-  variant, pooled over the selected categories and strategies. The trait-to-variant
-  join goes through the trait id, which encodes the position (`tr527466` ↔ position
-  527466).
+- **Allele frequency by selection strength** — vertical box-and-whisker of GWAS-panel
+  MAF against selection-coefficient bin, in the same format as
+  `figures_and_tables/dashboard`: box is the IQR on the surface fill, the heavy
+  line is the median, whiskers reach the furthest point within 1.5×IQR and the
+  tooltip counts what lies beyond. **One panel per category × sampling strategy.**
+  The three 15-replicate strategies draw on identical variant panels (the panel
+  depends on the stage-1 tree sequence and `min_maf`, not on how causal loci are
+  drawn), so their boxes coincide; `power n=30k` pools 10 replicates and differs
+  slightly.
+- **Outcome by causal-variant frequency** — vertical stacked counts of GWAS traits
+  against the MAF bin of the causal variant, again one panel per category ×
+  sampling strategy, with power / FP / FDR in the corner. Four outcome classes,
+  matching the old dashboard's `outcomeOf`:
+  `tp` correct pairing above the cutoff · `fp` only a wrong pairing above it ·
+  `uc` underpowered colocalization, a signal at the right pairing but under the
+  cutoff · `ufm` underpowered fine-mapping, no signal at the right pairing at all.
+  (The old dashboard defines `ufm` as "no fastEnloc row at all"; here it is "no
+  signal at the correct pairing", which is what the trait dump can distinguish.)
+  The trait-to-variant join goes through the trait id, which encodes the position
+  (`tr527466` ↔ position 527466).
+
+Both grids share a y-axis across visible panels by default, so panels compare
+directly; the **shared y-axis** control turns that off.
+
 - **Cattle ancestry blocks** — power per deep history. Cattle replicates come in
   blocks of five that each resume from an independently simulated ancestry;
   human replicates are each their own population, so their blocks are an
