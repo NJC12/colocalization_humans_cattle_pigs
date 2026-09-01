@@ -12,6 +12,14 @@
   --human:#2f6690; --cattle:#9a6414;
   --humanSoft:rgba(47,102,144,.14); --cattleSoft:rgba(154,100,20,.14);
   --accent:#17605e; --good:#2e7d5b; --warn:#b7791f; --crit:#a4373a;
+  /* The project's own designations, from figure2_revision2.ipynb color_key:
+     'human coloc' = firebrick4, 'cattle coloc' = purple4. Kept as the R names
+     resolve them so the dashboard and the report figures agree exactly. */
+  --coloc-human:#8B1A1A; --coloc-cattle:#551A8B;
+  /* Outcome ramp. --sw-max is the "black" end: it has to invererse in dark mode,
+     because pure black on a dark ground is invisible and the point of that slot
+     is maximum contrast against the panel, not the literal colour. */
+  --sw-max:#0A0A0A; --sw-dark:#5F5F5F; --sw-light:#C9C9C9;
   --shadow:0 1px 2px rgba(20,25,27,.06),0 4px 14px rgba(20,25,27,.05);
   --r:7px;
 }
@@ -22,6 +30,8 @@
     --human:#6ea8d8; --cattle:#d3a052;
     --humanSoft:rgba(110,168,216,.16); --cattleSoft:rgba(211,160,82,.16);
     --accent:#4ba39c; --good:#57b98c; --warn:#d9a441; --crit:#d97577;
+    --coloc-human:#E06C6C; --coloc-cattle:#A98BDE;
+    --sw-max:#F2F2F2; --sw-dark:#9A9A9A; --sw-light:#4E4E4E;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.28);
   }
 }
@@ -31,6 +41,8 @@
   --human:#6ea8d8; --cattle:#d3a052;
   --humanSoft:rgba(110,168,216,.16); --cattleSoft:rgba(211,160,82,.16);
   --accent:#4ba39c; --good:#57b98c; --warn:#d9a441; --crit:#d97577;
+  --coloc-human:#E06C6C; --coloc-cattle:#A98BDE;
+  --sw-max:#F2F2F2; --sw-dark:#9A9A9A; --sw-light:#4E4E4E;
   --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.28);
 }
 *{box-sizing:border-box}
@@ -163,8 +175,8 @@ footer{border-top:1px solid var(--line); padding-top:16px; color:var(--ink3); fo
 .axline{stroke:var(--line2); stroke-width:1}
 
 /* ---- vertical two-sided matrix cells ---- */
-td.vcell{padding:6px 8px; text-align:center; vertical-align:middle}
-.vb{display:flex; flex-direction:column; align-items:center; gap:0; width:52px; margin:0 auto}
+td.vcell{padding:6px 1px; text-align:center; vertical-align:middle}
+.vb{display:flex; flex-direction:column; align-items:center; gap:0; width:30px; margin:0 auto}
 .vb .num{font-family:"IBM Plex Mono",monospace; font-size:10px; font-variant-numeric:tabular-nums; line-height:1.3}
 /* Power and FDR share one pixels-per-percent scale, so a bar of a given
    length means the same thing on either side of zero. Power spans 0-100%
@@ -176,7 +188,7 @@ td.vcell{padding:6px 8px; text-align:center; vertical-align:middle}
 .vb .fill{width:100%}
 .vb .zero{width:44px; height:1px; background:var(--line2)}
 .vb .pw{color:var(--ink2)} .vb .fd{color:var(--ink3)}
-th.catcol{text-align:center; white-space:normal; min-width:104px; line-height:1.25}
+th.catcol{text-align:center; white-space:normal; min-width:70px; padding:9px 2px; line-height:1.2}
 td.armrow{text-align:left; white-space:nowrap; font-weight:500}
 .mlegend{font-size:11.5px; color:var(--ink3)}
 </style>
@@ -236,9 +248,9 @@ td.armrow{text-align:left; white-space:nowrap; font-weight:500}
   <div class="card">
     <div class="scroll"><table id="matrix"><thead></thead><tbody></tbody></table></div>
     <div class="legend">
-      <span class="lgi"><span class="sw" style="background:var(--human)"></span>human</span>
-      <span class="lgi"><span class="sw" style="background:var(--cattle)"></span>cattle</span>
-      <span class="lgi"><span class="sw" style="background:var(--crit)"></span>FDR (below zero, 0–50%, same scale)</span>
+      <span class="lgi"><span class="sw" style="background:var(--coloc-human)"></span>human coloc</span>
+      <span class="lgi"><span class="sw" style="background:var(--coloc-cattle)"></span>cattle coloc</span>
+      <span class="lgi"><span class="sw" style="background:var(--sw-max)"></span>FDR (below zero, 0–50%, same scale)</span>
       <span class="lgi" style="margin-left:auto"><span class="num">n</span> = replicates pooled</span>
     </div>
   </div>
@@ -277,18 +289,19 @@ td.armrow{text-align:left; white-space:nowrap; font-weight:500}
 
 <section>
   <div class="phead">
-    <h2>Outcome by causal-variant frequency</h2>
+    <h2>Outcome by causative-variant frequency</h2>
     <p class="note">Every GWAS locus, stacked by what happened to it, against the minor allele frequency
-       of its causal variant — the variant that causes that trait. One panel per category × sampling
+       of its causative variant — the variant assigned that trait's effect. One panel per category × sampling
        strategy, each on its own count axis.</p>
   </div>
   <div class="card">
     <div class="grid" id="gridStack"></div>
     <div class="legend">
-      <span class="lgi"><span class="sw" style="background:var(--human)"></span>true positive</span>
-      <span class="lgi"><span class="sw" style="background:var(--crit)"></span>false positive</span>
-      <span class="lgi"><span class="sw" style="background:var(--warn)"></span>underpowered coloc.</span>
-      <span class="lgi"><span class="sw" style="background:var(--line2)"></span>underpowered fine-map.</span>
+      <span class="lgi"><span class="sw" style="background:var(--coloc-human)"></span>true positive (human coloc)</span>
+      <span class="lgi"><span class="sw" style="background:var(--coloc-cattle)"></span>true positive (cattle coloc)</span>
+      <span class="lgi"><span class="sw" style="background:var(--sw-max)"></span>false positive</span>
+      <span class="lgi"><span class="sw" style="background:var(--sw-dark)"></span>underpowered coloc.</span>
+      <span class="lgi"><span class="sw" style="background:var(--sw-light)"></span>underpowered fine-map.</span>
     </div>
   </div>
 </section>
@@ -443,7 +456,7 @@ function renderMatrix(){
       const o = g.get(a+"|"+c);
       if (!o) return "<td class='vcell'>–</td>";
       const p = o.power===null?0:o.power, f = o.fdr===null?0:o.fdr;
-      const col = M.species[c]==="human" ? "var(--human)" : "var(--cattle)";
+      const col = M.species[c]==="human" ? "var(--coloc-human)" : "var(--coloc-cattle)";
       // Power fills a 0-100% track, FDR a 0-FDR_MAX% track that is FDR_MAX/100 as
       // tall, so both render at the same pixels per percentage point.
       const fh = Math.min(100, f/FDR_MAX*100);
@@ -451,7 +464,7 @@ function renderMatrix(){
         <span class="num pw" title="power ${fmt(o.power)}% of ${o.n} GWAS loci">${fmt(o.power)}</span>
         <span class="up"><span class="fill" style="height:${p}%;background:${col}"></span></span>
         <span class="zero"></span>
-        <span class="dn" title="FDR ${fmt(o.fdr)}% of ${o.tp + o.fp} calls"><span class="fill" style="height:${fh}%;background:var(--crit)"></span></span>
+        <span class="dn" title="FDR ${fmt(o.fdr)}% of ${o.tp + o.fp} calls"><span class="fill" style="height:${fh}%;background:var(--sw-max)"></span></span>
         <span class="num fd">${fmt(o.fdr)}</span></div></td>`;
     }).join("");
     const reps = K.map(c => (g.get(a+"|"+c)||{}).nrep).filter(Boolean);
@@ -522,7 +535,7 @@ function chartSelcoBox(arm, cat, yHi){
   return s+"</svg>";
 }
 
-/* ---------------- outcome by causal-variant MAF: stacked counts ---------------- */
+/* ---------------- outcome by causative-variant MAF: stacked counts ---------------- */
 function stackRows(arm, cat){
   const B = window.PUB_MAF;
   const rows = B.maf_labels.map(()=>({tp:0,fp:0,uc:0,ufm:0,n:0}));
@@ -541,10 +554,13 @@ function chartOutcomes(arm, cat, yHi){
   const yS = v => mT + ph - (v/hi)*ph;
   const bw = Math.min(38, (pw/rows.length)*0.72);
   const series = [
-    {k:"tp",  label:"True positive",           color:hue(cat)},
-    {k:"fp",  label:"False positive",          color:css("--crit")},
-    {k:"uc",  label:"Underpowered coloc.",     color:css("--warn")},
-    {k:"ufm", label:"Underpowered fine-map.",  color:css("--line2")},
+    // Bottom-to-top in this order: true positive, false positive, underpowered
+    // colocalization, underpowered fine-mapping. acc starts at 0 and the y scale
+    // is inverted, so series[0] sits on the axis.
+    {k:"tp",  label:"True positive",           color:M.species[cat]==="human"?css("--coloc-human"):css("--coloc-cattle")},
+    {k:"fp",  label:"False positive",          color:css("--sw-max")},
+    {k:"uc",  label:"Underpowered coloc.",     color:css("--sw-dark")},
+    {k:"ufm", label:"Underpowered fine-map.",  color:css("--sw-light")},
   ];
   let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
   s += axisY(mL, W-mR, yS, ticks, v=>fmtInt(v));
@@ -561,7 +577,7 @@ function chartOutcomes(arm, cat, yHi){
   });
   s += `<line class="axline" x1="${mL}" x2="${W-mR}" y1="${mT+ph}" y2="${mT+ph}"/>`;
   s += `<line class="axline" x1="${mL}" x2="${mL}" y1="${mT}" y2="${mT+ph}"/>`;
-  s += `<text class="axlab" x="${mL+pw/2}" y="${H-30}" text-anchor="middle">GWAS causal-variant MAF</text>`;
+  s += `<text class="axlab" x="${mL+pw/2}" y="${H-30}" text-anchor="middle">GWAS causative-variant MAF</text>`;
   s += `<text class="axlab" transform="rotate(-90 12 ${mT+ph/2})" x="12" y="${mT+ph/2}" text-anchor="middle">GWAS traits</text>`;
   const calls = tot.tp+tot.fp;
   const p1 = v => (100*v/tot.n).toFixed(1)+"%";

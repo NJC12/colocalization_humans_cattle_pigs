@@ -39,9 +39,10 @@ compares.
   Under the synthetic DFE the background-selection categories draw their
   causative variants from the *neutral* pool, so that series lands in the `0`
   bin there — visible directly in the plot.
-- **Outcome by causal-variant frequency** — vertical stacked counts of GWAS
-  traits against the MAF bin of the causal variant (the variant that causes that
-  trait), one panel per category × sampling strategy, with power / FP / FDR in
+- **Outcome by causative-variant frequency** — vertical stacked counts of GWAS
+  traits against the MAF bin of the causative variant (the variant assigned that
+  trait's effect), stacked bottom-to-top as true positive, false positive,
+  underpowered colocalization, underpowered fine-mapping. One panel per category × sampling strategy, with power / FP / FDR in
   the corner. Four outcome classes, matching the old dashboard's `outcomeOf`:
   `tp` correct pairing above the cutoff · `fp` only a wrong pairing above it ·
   `uc` underpowered colocalization, a signal at the right pairing but under the
@@ -54,6 +55,19 @@ Both grids give **each panel its own y-axis** by default. A shared scale
 compressed most panels into the bottom of the frame — measured, the per-panel box
 maxima span 0.085 to 0.5 and the stack maxima 51 to 307. The **shared y-axis**
 control turns sharing back on when panels need to be compared directly.
+
+### Colours
+
+Taken from the project's own `color_key` in `figures_and_tables/figure2_revision2.ipynb`,
+so the dashboard and the report figures agree: **human coloc** is `firebrick4`
+(`#8B1A1A`) and **cattle coloc** is `purple4` (`#551A8B`). Power bars and
+true-positive segments use the species colour; FDR and false positives use the
+maximum-contrast slot, underpowered colocalization dark grey, underpowered
+fine-mapping light grey.
+
+That contrast slot is black in light mode and near-white in dark mode. Pure black
+on a dark ground is invisible, and what the slot encodes is "maximum contrast
+against the panel", not the literal colour.
 
 ### Terminology
 
