@@ -616,6 +616,85 @@ function renderSmallMultiples(){
   gb.innerHTML = bParts.join(""); gs.innerHTML = sParts.join("");
 }
 
+/* ---------------- replicate spread, grouped ---------------- */
+function renderSpread(){
+  const svg = document.getElementById("chartSpread");
+  const A = arms(), K = cats();
+  if (!A.length || !K.length){ svg.outerHTML = `<svg id="chartSpread" viewBox="0 0 1000 60"><text class="axis" x="12" y="34">Nothing selected.</text></svg>`; return; }
+  const laneH = 15, groupPad = 16, padL = 240, padR = 44, padT = 14;
+  const groupH = A.length*laneH + groupPad;
+  const H = padT + K.length*groupH + 26;
+  const W = 1000;
+  let allv = [];
+  K.forEach(c=>A.forEach(a=>perRep(a,c).forEach(r=>{ if(r.v!==null) allv.push(r.v); })));
+  const max = Math.max(10, Math.ceil(Math.max(...allv,10)/10)*10);
+  const x = v => padL + (v/max)*(W-padL-padR);
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">`;
+  for(let t=0;t<=max;t+=max/5){
+    s += `<line class="gridline" x1="${x(t)}" y1="${padT}" x2="${x(t)}" y2="${padT+K.length*groupH}"/>`;
+    s += `<text class="axis" x="${x(t)}" y="${padT+K.length*groupH+16}" text-anchor="middle">${t}%</text>`;
+  }
+  K.forEach((cat,ci)=>{
+    const gy = padT + ci*groupH;
+    const col = M.species[cat]==="human" ? css("--coloc-human") : css("--coloc-cattle");
+    if (ci) s += `<line x1="8" y1="${gy-groupPad/2}" x2="${W-padR}" y2="${gy-groupPad/2}" stroke="${css('--line')}" stroke-width="1"/>`;
+    s += `<text class="catlab" x="8" y="${gy+13}" style="font-weight:500">${CAT_SHORT[cat]}</text>`;
+    A.forEach((a,ai)=>{
+      const y = gy + 8 + ai*laneH;
+      s += `<text class="axis" x="${padL-12}" y="${y+4}" text-anchor="end">${ARM_SHORT[a]}</text>`;
+      const rows = perRep(a,cat).filter(r=>r.v!==null);
+      if(!rows.length){ s += `<text class="axis" x="${padL+4}" y="${y+4}" opacity=".6">no data</text>`; return; }
+      const mean = rows.reduce((t,r)=>t+r.v,0)/rows.length;
+      const lo = Math.min(...rows.map(r=>r.v)), hi = Math.max(...rows.map(r=>r.v));
+      s += `<line x1="${x(lo)}" y1="${y}" x2="${x(hi)}" y2="${y}" stroke="${col}" stroke-width="1" opacity=".33"/>`;
+      rows.forEach(r=>{ s += `<circle cx="${x(r.v)}" cy="${y}" r="2.5" fill="${col}" opacity=".55"><title>${CAT_SHORT[cat]} · ${ARM_SHORT[a]} · rep ${r.rep} (ancestry ${r.dh}): ${fmt(r.v)}%</title></circle>`; });
+      s += `<rect x="${x(mean)-1}" y="${y-5.5}" width="2" height="11" fill="${col}"><title>mean ${fmt(mean)}% over ${rows.length} replicates</title></rect>`;
+    });
+  });
+  s += "</svg>";
+  svg.outerHTML = s.replace("<svg ", `<svg id="chartSpread" role="img" `);
+}
+
+/* ---------------- deep-history blocks ---------------- */
+function renderBlocks(){
+  const svg = document.getElementById("chartBlocks");
+  const K = cats();
+  if (!K.length || !arms().length){ svg.outerHTML = `<svg id="chartBlocks" viewBox="0 0 1000 60"><text class="axis" x="12" y="34">Nothing selected.</text></svg>`; return; }
+  const blocks = [...new Set(C.map(c=>c.dh))].sort();
+  const W=1000, rowH=56, padL=200, padR=44, padT=12;
+  const H = padT + K.length*rowH + 40;
+  const g = new Map();
+  for (const c of C){
+    if (c.panel!==panel || !onCats.has(c.cat) || !onArms.has(c.arm)) continue;
+    const k = c.cat+"|"+c.dh;
+    let o = g.get(k); if(!o){ o={n:0,tp:0}; g.set(k,o); }
+    o.n += c.n; o.tp += rcp===50?c.tp50:c.tp90;
+  }
+  const vals=[...g.values()].map(o=>pct(o.tp,o.n)).filter(v=>v!==null);
+  const max = Math.max(10, Math.ceil(Math.max(...vals,10)/10)*10);
+  const x = v => padL + (v/max)*(W-padL-padR);
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">`;
+  for(let t=0;t<=max;t+=max/5){
+    s += `<line class="gridline" x1="${x(t)}" y1="${padT}" x2="${x(t)}" y2="${padT+K.length*rowH}"/>`;
+    s += `<text class="axis" x="${x(t)}" y="${padT+K.length*rowH+16}" text-anchor="middle">${t}%</text>`;
+  }
+  K.forEach((cat,ci)=>{
+    const y0 = padT + ci*rowH;
+    const col = M.species[cat]==="human" ? css("--coloc-human") : css("--coloc-cattle");
+    s += `<text class="catlab" x="${padL-12}" y="${y0+rowH/2+4}" text-anchor="end">${CAT_SHORT[cat]}</text>`;
+    blocks.forEach((b,bi)=>{
+      const o = g.get(cat+"|"+b); if(!o) return;
+      const v = pct(o.tp,o.n); if(v===null) return;
+      const bh=10, y = y0+8+bi*12;
+      s += `<rect x="${padL}" y="${y}" width="${Math.max(1,x(v)-padL)}" height="${bh}" rx="2" fill="${col}" opacity="${1-bi*0.22}"><title>${CAT_SHORT[cat]} — ancestry ${b}: ${fmt(v)}%</title></rect>`;
+      s += `<text class="barval" x="${x(v)+6}" y="${y+bh-1}">${b}</text>`;
+    });
+  });
+  s += `<text class="axis" x="${padL}" y="${H-6}">each bar is one deep history; cattle bars differ by ancestry, human bars are a noise reference</text>`;
+  s += "</svg>";
+  svg.outerHTML = s.replace("<svg ", `<svg id="chartBlocks" role="img" `);
+}
+
 function renderAll(){ renderStrip(); renderMatrix(); renderSmallMultiples(); renderSpread(); renderBlocks(); }
 function wire(id, set){
   const el = document.getElementById(id);

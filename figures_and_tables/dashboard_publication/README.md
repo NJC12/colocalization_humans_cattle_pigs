@@ -113,9 +113,23 @@ The build was verified by re-deriving all 96 cell × threshold combinations from
 the embedded per-replicate data and checking them against `summarize_coloc.py`'s
 own summary — 0 mismatches. Worth repeating on any rebuild.
 
+## Checking a rebuild
+
+`node --check` only validates syntax. It does **not** catch a function that is
+called but never defined — which happened twice: a slice-and-replace edit removed
+`renderSpread` and `renderBlocks`, `renderAll` threw partway, and two panels
+rendered blank while everything above them looked fine.
+
+    node render_smoke.js publication_dashboard.fragment.html
+
+executes the page's real logic against a stub DOM and asserts every target
+element actually received content. Run it after any edit to the script block.
+
 ## Files
 
 - `publication_dashboard.html` — standalone, open directly in a browser.
+- `render_smoke.js` — executes the dashboard logic against a stub DOM and fails
+  if any panel is never painted.
 - `build_maf_aggregates.py` — runs on O2; produces the MAF/selection and
   outcome/MAF aggregates the last two plots embed. Reads ~11M variant rows and
   emits quantiles from a 0.001-resolution histogram rather than holding every
