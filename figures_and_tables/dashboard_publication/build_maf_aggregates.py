@@ -45,7 +45,16 @@ def stats_from_hist(h):
 # set. The three 15-replicate arms share their panels exactly (verified: same
 # variant count to the unit); causal_power_n30000 pools 10 replicates and so
 # legitimately differs.
-hist=collections.defaultdict(lambda:[0]*NB)
+# Four variant subsets, following the codebase's own vocabulary:
+#   all         every variant in the GWAS panel
+#   nonneutral  selco != 0 -- under selection; the pool causal loci are drawn from
+#   neutral     selco == 0
+#   causative   beta != 0 -- actually assigned a trait effect. Under
+#               synthetic_dfe_effects (categories K and L) these are drawn from
+#               the NEUTRAL variants, so the causative series lands in the
+#               selco == 0 bin there rather than tracking the selected pool.
+SUBSETS=("all","nonneutral","neutral","causative")
+hist=collections.defaultdict(lambda:[0]*NB)   # (arm,cat,selcobin,subset)
 
 traits=collections.defaultdict(list)
 with open(O+"/dash_traits.tsv") as fh:
@@ -65,9 +74,13 @@ for r in runs:
         for v in csv.DictReader(fh,delimiter="\t"):
             try:
                 m=float(v["maf"]); sc=float(v["selco"]); p=int(float(v["position"]))
+                be=float(v.get("beta") or 0)
             except (ValueError,KeyError,TypeError): continue
             if m>0.5: m=1.0-m
-            hist[(arm,cat,selco_bin(sc))][min(int(round(m*1000)),NB-1)]+=1
+            k=min(int(round(m*1000)),NB-1); sb=selco_bin(sc)
+            hist[(arm,cat,sb,"all")][k]+=1
+            hist[(arm,cat,sb,"neutral" if sc==0 else "nonneutral")][k]+=1
+            if be!=0: hist[(arm,cat,sb,"causative")][k]+=1
             pos2maf[p]=m
     for t in traits.get((arm,rundir),()):
         mb=maf_bin(pos2maf.get(int(t["trait"][2:])))
@@ -84,9 +97,9 @@ for r in runs:
     done+=1
     if done%75==0: print(f"  {done}/{len(runs)}", flush=True)
 
-box=[dict(arm=a,cat=c,sb=sb,**st) for (a,c,sb),h in hist.items() if (st:=stats_from_hist(h))]
+box=[dict(arm=a,cat=c,sb=sb,ss=ss,**st) for (a,c,sb,ss),h in hist.items() if (st:=stats_from_hist(h))]
 stack=[dict(arm=a,cat=c,panel=p,rcp=rc,mb=mb,oc=oc,n=n) for (a,c,p,rc,mb,oc),n in outcome.items()]
 assert stack and box, "aggregation produced nothing"
-json.dump(dict(selco_labels=SELCO_LABELS,maf_labels=MAF_LABELS,box=box,stack=stack),
+json.dump(dict(selco_labels=SELCO_LABELS,maf_labels=MAF_LABELS,subsets=list(SUBSETS),box=box,stack=stack),
           open(O+"/dash_maf.json","w"),separators=(",",":"))
 print("runs:",done," box:",len(box)," stack:",len(stack)," bytes:",os.path.getsize(O+"/dash_maf.json"))

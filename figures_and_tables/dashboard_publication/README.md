@@ -21,37 +21,42 @@ compares.
 
 - **Filters** — checkboxes for each of the six categories and each of the four
   sampling strategies, with all/none shortcuts. They scope every view below.
-- **Category × strategy matrix** — each cell is two-sided about a shared zero:
-  **power** grows rightward, **FDR** grows leftward, both on a 0–100% scale, so
-  a cell that is good on both counts reads as a short left arm and a long right
-  one. The `n` column is the replicate count, highlighted when a row's
-  strategies pool different numbers.
-- **Replicate spread** — grouped by category, then by a labelled lane per
-  sampling strategy. One mark per replicate with the mean, so a difference can
-  be read against the scatter it sits in.
-- **Allele frequency by selection strength** — vertical box-and-whisker of GWAS-panel
-  MAF against selection-coefficient bin, in the same format as
-  `figures_and_tables/dashboard`: box is the IQR on the surface fill, the heavy
-  line is the median, whiskers reach the furthest point within 1.5×IQR and the
-  tooltip counts what lies beyond. **One panel per category × sampling strategy.**
-  The three 15-replicate strategies draw on identical variant panels (the panel
-  depends on the stage-1 tree sequence and `min_maf`, not on how causal loci are
-  drawn), so their boxes coincide; `power n=30k` pools 10 replicates and differs
-  slightly.
-- **Outcome by causal-variant frequency** — vertical stacked counts of GWAS traits
-  against the MAF bin of the causal variant, again one panel per category ×
-  sampling strategy, with power / FP / FDR in the corner. Four outcome classes,
-  matching the old dashboard's `outcomeOf`:
+- **Category × strategy matrix** — categories across, sampling strategies down.
+  Each cell is two-sided about a shared zero: **power** grows upward, **FDR**
+  downward, both on a 0–100% scale.
+- **Allele frequency by selection strength** — vertical box-and-whisker of MAF
+  against selection-coefficient bin, in the same format as
+  `figures_and_tables/dashboard`: box is the IQR on the surface fill, heavy line
+  is the median, whiskers reach the furthest point within 1.5×IQR and the tooltip
+  counts what lies beyond. One panel per category × sampling strategy.
+  **Variant-set checkboxes** choose which series are drawn:
+  `all` · `non-neutral` (selco ≠ 0, the pool causal loci are drawn from) ·
+  `neutral` (selco = 0) · `causative` (actually assigned a trait effect).
+  Under the synthetic DFE the background-selection categories draw their
+  causative variants from the *neutral* pool, so that series lands in the `0`
+  bin there — visible directly in the plot.
+- **Outcome by causal-variant frequency** — vertical stacked counts of GWAS
+  traits against the MAF bin of the causal variant (the variant that causes that
+  trait), one panel per category × sampling strategy, with power / FP / FDR in
+  the corner. Four outcome classes, matching the old dashboard's `outcomeOf`:
   `tp` correct pairing above the cutoff · `fp` only a wrong pairing above it ·
   `uc` underpowered colocalization, a signal at the right pairing but under the
-  cutoff · `ufm` underpowered fine-mapping, no signal at the right pairing at all.
-  (The old dashboard defines `ufm` as "no fastEnloc row at all"; here it is "no
-  signal at the correct pairing", which is what the trait dump can distinguish.)
-  The trait-to-variant join goes through the trait id, which encodes the position
-  (`tr527466` ↔ position 527466).
+  cutoff · `ufm` underpowered fine-mapping, no signal at the right pairing at
+  all. (The old dashboard defines `ufm` as "no fastEnloc row at all"; here it is
+  "no signal at the correct pairing", which is what the trait dump can
+  distinguish.)
 
-Both grids share a y-axis across visible panels by default, so panels compare
-directly; the **shared y-axis** control turns that off.
+Both grids give **each panel its own y-axis** by default. A shared scale
+compressed most panels into the bottom of the frame — measured, the per-panel box
+maxima span 0.085 to 0.5 and the stack maxima 51 to 307. The **shared y-axis**
+control turns sharing back on when panels need to be compared directly.
+
+### Terminology
+
+Following the pipeline's own usage: a **causal variant** is the variant that
+causes a trait; a **causative** locus or variant is one actually assigned an
+effect (`summarize_coloc`'s `*_cs_causative` is "at the causative loci only");
+**non-neutral** means `selco ≠ 0`, the pool from which causal loci are drawn.
 
 - **Cattle ancestry blocks** — power per deep history. Cattle replicates come in
   blocks of five that each resume from an independently simulated ancestry;
