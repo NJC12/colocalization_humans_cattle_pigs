@@ -12,7 +12,13 @@ def maf_bin(m):
     if m is None or m<=0: return None
     return min(int(m/0.05),9)
 
-NB=501                                    # MAF histogram at 0.001 resolution
+# 0.0001 resolution, not 0.001. The human panel is 9,000 individuals, so the
+# smallest non-zero MAF is ~5.6e-5 and the spectrum is dominated by near-singleton
+# variants: at 0.001 resolution more than half of every human bin landed in bucket
+# 0 and every human median, quartile and whisker reported exactly 0.0000. Cattle
+# was unaffected (median 0.119) because its spectrum is far flatter.
+NB=5001                                   # MAF histogram at 0.0001 resolution
+RES=10000.0
 def stats_from_hist(h):
     """Tukey box stats without holding every value: quartiles from the histogram,
     whiskers to the most extreme datum inside 1.5 IQR, outliers counted."""
@@ -21,15 +27,15 @@ def stats_from_hist(h):
     def q(p):
         target=p*(n-1); cum=0
         for i,c in enumerate(h):
-            if c and cum+c>target: return i/1000.0
+            if c and cum+c>target: return i/RES
             cum+=c
-        return (NB-1)/1000.0
+        return (NB-1)/RES
     q1,med,q3 = q(.25),q(.5),q(.75)
     iqr=q3-q1; lo_f,hi_f = q1-1.5*iqr, q3+1.5*iqr
     lo=hi=None; n_lo=n_hi=0; vmin=vmax=None
     for i,c in enumerate(h):
         if not c: continue
-        v=i/1000.0
+        v=i/RES
         if vmin is None: vmin=v
         vmax=v
         if v<lo_f: n_lo+=c
@@ -77,10 +83,15 @@ for r in runs:
                 be=float(v.get("beta") or 0)
             except (ValueError,KeyError,TypeError): continue
             if m>0.5: m=1.0-m
-            k=min(int(round(m*1000)),NB-1); sb=selco_bin(sc)
+            k=min(int(round(m*RES)),NB-1); sb=selco_bin(sc)
+            nn = "neutral" if sc==0 else "nonneutral"
             hist[(arm,cat,sb,"all")][k]+=1
-            hist[(arm,cat,sb,"neutral" if sc==0 else "nonneutral")][k]+=1
-            if be!=0: hist[(arm,cat,sb,"causative")][k]+=1
+            hist[(arm,cat,-1,"all")][k]+=1          # -1 = pooled over selection bins
+            hist[(arm,cat,sb,nn)][k]+=1
+            hist[(arm,cat,-1,nn)][k]+=1
+            if be!=0:
+                hist[(arm,cat,sb,"causative")][k]+=1
+                hist[(arm,cat,-1,"causative")][k]+=1
             pos2maf[p]=m
     for t in traits.get((arm,rundir),()):
         mb=maf_bin(pos2maf.get(int(t["trait"][2:])))

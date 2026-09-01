@@ -17,8 +17,11 @@ function el(id){
     getAttribute:()=>null, setAttribute(){}, textContent:"" };
 }
 global.window={ matchMedia:()=>({addEventListener(){}}) };
+// querySelectorAll returns a real array: the page spreads it and reads .length,
+// and the scroll-spy bails out cleanly on an empty one.
 global.document={ getElementById:id=>el(id), querySelector:s=>el(s),
-                  addEventListener(){}, documentElement:{} };
+                  querySelectorAll:()=>[], addEventListener(){}, documentElement:{} };
+global.IntersectionObserver=class{ constructor(){} observe(){} };
 global.getComputedStyle=()=>({ getPropertyValue:()=> "#888888" });
 global.matchMedia=global.window.matchMedia;
 
@@ -26,7 +29,7 @@ data.forEach(s=>eval(s));
 try { eval(logic); }
 catch(e){ console.log("RENDER THREW:", e.constructor.name+":", e.message); process.exit(1); }
 
-const want=["prov","strip","#matrix thead","#matrix tbody","gridBox","gridStack","chartSpread","chartBlocks","cbCats","cbArms","cbSubs","foot"];
+const want=["prov","strip","#matrix thead","#matrix tbody","gridBox","gridStack","chartSpread","cbCats","cbArms","cbSubs","foot"];
 let bad=0;
 for(const k of want){
   const n=painted[k];

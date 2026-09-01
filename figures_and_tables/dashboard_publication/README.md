@@ -33,6 +33,9 @@ compares.
   `figures_and_tables/dashboard`: box is the IQR on the surface fill, heavy line
   is the median, whiskers reach the furthest point within 1.5×IQR and the tooltip
   counts what lies beyond. One panel per category × sampling strategy.
+  A **dashed line** per selected set marks that set's panel-wide median, pooled
+  across selection bins (stored under `sb = -1`; a median cannot be recovered
+  from per-bin medians, so it needs its own histogram).
   **Variant-set checkboxes** choose which series are drawn:
   `all` · `non-neutral` (selco ≠ 0, the pool causal loci are drawn from) ·
   `neutral` (selco = 0) · `causative` (actually assigned a trait effect).
@@ -76,10 +79,6 @@ causes a trait; a **causative** locus or variant is one actually assigned an
 effect (`summarize_coloc`'s `*_cs_causative` is "at the causative loci only");
 **non-neutral** means `selco ≠ 0`, the pool from which causal loci are drawn.
 
-- **Cattle ancestry blocks** — power per deep history. Cattle replicates come in
-  blocks of five that each resume from an independently simulated ancestry;
-  human replicates are each their own population, so their blocks are an
-  arbitrary split and act as a noise reference.
 
 Global controls (eQTL panel size, RCP cutoff) scope everything at once.
 
@@ -112,6 +111,20 @@ more replicates land:
 The build was verified by re-deriving all 96 cell × threshold combinations from
 the embedded per-replicate data and checking them against `summarize_coloc.py`'s
 own summary — 0 mismatches. Worth repeating on any rebuild.
+
+### MAF histogram resolution
+
+The aggregate bins MAF at **0.0001**, not 0.001. With 9,000 GWAS individuals the
+smallest non-zero MAF is ~5.6e-5 and the human panel is dominated by
+near-singleton variants: at 0.001 resolution more than half of every human bin
+fell into bucket 0 and every human median, quartile and whisker reported exactly
+0.0000. Cattle was unaffected (median 0.119), which is why it went unnoticed —
+it only became visible when the median line was added.
+
+For scale, human: panel median 0.0001, causative median 0.0056. The causative
+variants are ~56× commoner than the panel at large, which is `causal_min_maf =
+0.001` gating them. A linear MAF axis will always compress the human panels;
+reading them well would want a log axis.
 
 ## Checking a rebuild
 
