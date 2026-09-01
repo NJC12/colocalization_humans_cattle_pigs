@@ -22,8 +22,11 @@ compares.
 - **Filters** — checkboxes for each of the six categories and each of the four
   sampling strategies, with all/none shortcuts. They scope every view below.
 - **Category × strategy matrix** — categories across, sampling strategies down.
-  Each cell is two-sided about a shared zero: **power** grows upward, **FDR**
-  downward, both on a 0–100% scale.
+  Each cell is two-sided about a shared zero: **power** grows upward on a
+  0–100% scale, **FDR** downward on a **0–30%** scale. 30% covers 94 of the 96
+  cells; the two that exceed it (cattle baseline, 500-person panel, RCP > 0.5 —
+  31.0% and 35.3%) get a hatched cap, so a clipped bar is not mistaken for one
+  sitting exactly at the axis top. The printed number is always the real value.
 - **Allele frequency by selection strength** — vertical box-and-whisker of MAF
   against selection-coefficient bin, in the same format as
   `figures_and_tables/dashboard`: box is the IQR on the surface fill, heavy line
