@@ -22,6 +22,12 @@ compares.
 - **Filters** — checkboxes for each of the six categories and each of the four
   sampling strategies, with all/none shortcuts. They scope every view below.
 - **Category × strategy matrix** — categories across, sampling strategies down.
+  Category labels run at 45°, so a column is only as wide as its bar and the
+  bars sit adjacent. The section has a **fixed total bar budget** (528px) split
+  across the visible strategies, so deselecting strategies makes each remaining
+  plot taller — an 88px power track with four showing, 352px with one — while
+  the 2:1 track split keeps the scale identical at every height.
+
   Each cell is two-sided about a shared zero: **power** grows upward to 100%,
   **FDR** downward to 50%, both drawn at the same pixels per percentage point
   (0.88 px/%), so a bar of a given length means the same on either side. The FDR

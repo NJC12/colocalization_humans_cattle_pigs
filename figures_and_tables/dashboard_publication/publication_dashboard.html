@@ -183,12 +183,26 @@ td.vcell{padding:6px 1px; text-align:center; vertical-align:middle}
    over 88px; FDR spans 0-50% over 44px -- the same 0.88 px per percentage
    point. 50% is chosen because the largest FDR anywhere is 35.3% (cattle
    baseline, 500-person panel, RCP>0.5), so nothing clips. */
-.vb .up{width:26px; height:88px; background:var(--surface2); border-radius:2px; overflow:hidden; display:flex; align-items:flex-end}
-.vb .dn{width:26px; height:44px; background:var(--surface2); border-radius:2px; overflow:hidden; display:flex; align-items:flex-start}
+/* Track heights are set inline: the section has a FIXED total bar budget,
+   split across however many strategies are showing, so fewer strategies
+   means taller plots. The 2:1 split keeps power (0-100%) and FDR (0-50%)
+   at the same pixels per percentage point whatever the height. */
+.vb .up{width:26px; background:var(--surface2); border-radius:2px; overflow:hidden; display:flex; align-items:flex-end}
+.vb .dn{width:26px; background:var(--surface2); border-radius:2px; overflow:hidden; display:flex; align-items:flex-start}
 .vb .fill{width:100%}
 .vb .zero{width:44px; height:1px; background:var(--line2)}
 .vb .pw{color:var(--ink2)} .vb .fd{color:var(--ink3)}
-th.catcol{text-align:center; white-space:normal; min-width:70px; padding:9px 2px; line-height:1.2}
+/* Category labels run at 45 degrees so a column is only as wide as its bar and
+   the bars sit adjacent. The th is a fixed-height box; the label is rotated
+   about its bottom-left corner inside it. */
+th.catcol{height:112px; padding:0 1px; vertical-align:bottom; text-align:left; white-space:nowrap; background:var(--surface2)}
+th.catcol > span{
+  display:inline-block; transform:rotate(-45deg); transform-origin:left bottom;
+  transform-box:border-box; white-space:nowrap; font-size:11px; letter-spacing:0;
+  text-transform:none; color:var(--ink2); font-weight:500; line-height:1;
+  margin-left:16px; padding-bottom:2px;
+}
+th.catcol .sp{margin-right:5px}
 td.armrow{text-align:left; white-space:nowrap; font-weight:500}
 .mlegend{font-size:11.5px; color:var(--ink3)}
 
@@ -479,7 +493,13 @@ function renderMatrix(){
     return;
   }
   thead.innerHTML = "<tr><th class='l'>sampling strategy</th>" + K.map(c =>
-    `<th class="catcol"><span class="sp ${M.species[c]}"></span>${CAT_SHORT[c]}</th>`).join("") + "</tr>";
+    `<th class="catcol"><span><span class="sp ${M.species[c]}"></span>${CAT_SHORT[c]}</span></th>`).join("") + "</tr>";
+  // Fixed budget for the whole section: the fewer strategies on screen, the
+  // taller each row. 528px is what four rows of the previous 88+44 came to, so
+  // the default view is unchanged and one strategy alone fills the same space.
+  const BAR_BUDGET = 528;
+  const rowBar = BAR_BUDGET / A.length;
+  const upPx = rowBar * (100/150), dnPx = rowBar * (50/150);   // keeps 1:1
   tbody.innerHTML = A.map(a=>{
     const tds = K.map(c=>{
       const o = g.get(a+"|"+c);
@@ -491,9 +511,9 @@ function renderMatrix(){
       const fh = Math.min(100, f/FDR_MAX*100);
       return `<td class="vcell"><div class="vb">
         <span class="num pw" title="power ${fmt(o.power)}% of ${o.n} GWAS loci">${fmt(o.power)}</span>
-        <span class="up"><span class="fill" style="height:${p}%;background:${col}"></span></span>
+        <span class="up" style="height:${upPx.toFixed(3)}px"><span class="fill" style="height:${p}%;background:${col}"></span></span>
         <span class="zero"></span>
-        <span class="dn" title="FDR ${fmt(o.fdr)}% of ${o.tp + o.fp} calls"><span class="fill" style="height:${fh}%;background:var(--sw-max)"></span></span>
+        <span class="dn" style="height:${dnPx.toFixed(3)}px" title="FDR ${fmt(o.fdr)}% of ${o.tp + o.fp} calls"><span class="fill" style="height:${fh}%;background:var(--sw-max)"></span></span>
         <span class="num fd">${fmt(o.fdr)}</span></div></td>`;
     }).join("");
     const reps = K.map(c => (g.get(a+"|"+c)||{}).nrep).filter(Boolean);
