@@ -203,6 +203,15 @@ td.armrow{text-align:left; white-space:nowrap; font-weight:500}
 .sidenav a[aria-current="true"]{background:var(--surface2); color:var(--ink); border-left-color:var(--accent); font-weight:500}
 .sidenav a:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
 section{scroll-margin-top:74px}
+/* The fixed sidebar sits outside .wrap, so nothing in the normal flow knows it
+   is there: .wrap centres against the whole viewport and slides underneath it.
+   Reserve the gutter on BODY rather than on .wrap, so .wrap keeps centring --
+   inside what is left, rather than being shoved right. 14 (left) + 158 (width)
+   + 14 (gap) = 186. The two queries are complementary so no width falls
+   through both or neither. */
+@media (min-width:1241px){
+  body{padding-left:186px}
+}
 @media (max-width:1240px){
   .sidenav{position:static; width:auto; flex-direction:row; flex-wrap:wrap; margin:14px 24px 0; box-shadow:none}
   .sidenav .lab{width:100%; margin-bottom:0}
