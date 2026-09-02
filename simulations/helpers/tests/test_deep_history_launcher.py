@@ -343,3 +343,10 @@ def test_the_unlock_is_still_conditional():
                if "$SNAKEMAKE" in l and "--unlock" in l)
     guard = next(i for i in range(cmd - 1, -1, -1) if lines[i].startswith("if [["))
     assert '"$CLAIMED" == "stale"' in lines[guard]
+
+
+def test_a_deployment_without_the_liveness_fix_is_refused():
+    """preflight_repo reads the DEPLOYED copy. A deployment predating the fix
+    relaunches nothing and prints a clean pass, which is the failure mode that
+    hid this for a full block."""
+    assert 'require_marker "controller_claim/jobid" submit_publication.sh' in COMMON

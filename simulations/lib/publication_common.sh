@@ -144,6 +144,13 @@ preflight_repo() {
     # And it must reach the command line, or every replicate silently resumes from
     # the config YAML's single 20250303 history.
     require_marker "CB_SEED" controller_publication.sbatch       || rc=1
+    # "In progress" must be read off the controller CLAIM, not off a snakemake
+    # lock. A lock outlives the snakemake that made it whenever that snakemake is
+    # killed, while the controller's EXIT trap still removes the claim -- so the
+    # lock-globbing version refused those workdirs forever and left 15 of arm
+    # causal_maf001_paired's reps 16-20 unfinishable. A deployment predating the
+    # fix relaunches nothing and reports success, so fail loudly instead.
+    require_marker "controller_claim/jobid" submit_publication.sh || rc=1
     for f in helpers/publication_categories.tsv helpers/publication_arms.tsv \
              helpers/publication_deep_histories.tsv \
              controller_publication.sbatch helpers/write_run_manifests.py; do
