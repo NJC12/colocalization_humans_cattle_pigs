@@ -126,11 +126,27 @@ trap 'rm -rf "$CLAIM"' EXIT
 # --snakefile path, so every script and include still resolves against $REPO.
 cd "$WD"
 
-# Unlock ONLY when we took over a stale claim, i.e. when the previous controller
-# is provably gone. Doing it unconditionally is what let two controllers coexist:
-# it cannot distinguish a lock held by a dead process from one held by a live one,
-# and it silently released the live one.
-if [[ "$CLAIMED" == "stale" ]]; then
+# Unlock only when the previous controller is PROVABLY gone. Doing it
+# unconditionally is what let two controllers coexist: it cannot distinguish a
+# lock held by a dead process from one held by a live one, and it silently
+# released the live one.
+#
+# Two ways to have that proof, and both are needed:
+#   stale claim   - we took the claim over from a job that is no longer RUNNING
+#                   or PENDING.
+#   fresh claim   - `mkdir` above SUCCEEDED, so no claim directory existed. A
+#     + a lock      live controller always holds its claim (created before it
+#                   touches anything, removed only by its own EXIT trap), so a
+#                   live holder would have sent us out through the REFUSING
+#                   branch. Reaching here means nothing is running in this
+#                   workdir, and any lock present was left by a snakemake that
+#                   was killed -- walltime or node failure -- while its
+#                   controller's trap still cleaned up the claim.
+#
+# That second case is not hypothetical: it is how 15 of arm causal_maf001_paired's
+# reps 16-20 ended up unfinishable. Without it a relaunch takes a fresh claim,
+# skips the unlock, and snakemake exits on the stale lock it could have released.
+if [[ "$CLAIMED" == "stale" ]] || compgen -G "$WD/.snakemake/locks/*" >/dev/null 2>&1; then
     "$SNAKEMAKE" --snakefile "$REPO/Snakefile" --configfile "$REPO/$CONFIGFILE" --unlock \
         --config stage1_seed="$SEED" stage2_seed="$SEED" workdir="$WD" publishdir="$PD" \
         "$STAGE1_CFG" $CB_CFG $EXTRA_CONFIG || true

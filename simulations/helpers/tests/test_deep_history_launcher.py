@@ -256,3 +256,90 @@ def test_the_enloc_count_cannot_silently_exit_the_launcher():
     assert "ls -1" not in window
     assert "wc -l" not in window
     assert 'for f in "${ENLOC_HITS[@]}"' in window
+
+
+# ------------------------------------- what counts as "already in progress"
+
+def _keep_idx_loop():
+    """The launcher's in-progress decision, isolated from the rest of the file.
+
+    Scoped deliberately: `.snakemake/locks` may legitimately appear elsewhere
+    (a diagnostic, a comment), and what this section asserts is what the
+    DECISION reads.
+    """
+    i = LAUNCHER.index("declare -a KEEP_IDX=()")
+    j = LAUNCHER.index("if (( skipped_locked ))", i)
+    return LAUNCHER[i:j]
+
+
+def test_in_progress_is_decided_by_the_claim_not_the_lock():
+    """THE BUG that left 15 runs unfinishable.
+
+    The loop globbed `.snakemake/locks/*` and called any hit "a controller
+    already holds this workdir". But a snakemake killed at walltime dies without
+    releasing its lock, while the controller's own `trap ... EXIT` still fires and
+    removes the claim -- leaving a lock and no liveness record. Every relaunch
+    then refused the run. Arm causal_maf001_paired reps 16-20 finished 15/30, its
+    two passes submitted 1 job between them, and all 15 stragglers had locks=2,
+    no claim, and no running job. The lock says snakemake once ran here; only the
+    claim says whether anything runs here now.
+    """
+    loop = _keep_idx_loop()
+    assert ".snakemake/locks" not in loop, \
+        "the in-progress decision is reading the lock again"
+    assert ".controller_claim/jobid" in loop
+
+
+def test_only_a_running_or_pending_owner_blocks_a_relaunch():
+    """A claim whose owner has finished, failed or been purged from slurmctld is
+    not a live controller. Anything less specific than these two states makes a
+    dead owner block its workdir permanently."""
+    loop = _keep_idx_loop()
+    assert 'scontrol show job "$OWNER"' in loop
+    assert '"$STATE" == "JobState=RUNNING"' in loop
+    assert '"$STATE" == "JobState=PENDING"' in loop
+
+
+def test_the_launcher_and_the_controller_agree_on_liveness():
+    """Two different answers to "who holds this workdir" is how the original
+    double-controller incident happened. Same primitive, same states, both
+    sides."""
+    for src in (LAUNCHER, CONTROLLER):
+        assert 'JobState=RUNNING' in src and 'JobState=PENDING' in src
+        assert 'scontrol show job' in src
+
+
+def test_the_skip_message_names_the_job_holding_the_workdir():
+    """"a controller already holds this workdir" with no job id is what made this
+    take a manual scratch crawl to diagnose."""
+    loop = _keep_idx_loop()
+    assert '"$OWNER"' in loop[loop.index("printf"):]
+
+
+# --------------------------------------------- releasing an orphaned lock
+
+def test_the_controller_unlocks_a_lock_left_under_a_fresh_claim():
+    """The other half of the same bug. With the launcher fixed, a relaunch onto
+    one of those workdirs takes a FRESH claim (no claim directory existed), so
+    the old `CLAIMED == stale` guard skipped the unlock -- and snakemake exited
+    on a stale lock it was entitled to release.
+
+    Safe because a fresh claim is itself the proof: a live controller always
+    holds its claim, so it would have sent this job out through REFUSING above.
+    """
+    line = [l for l in CONTROLLER.splitlines()
+            if l.startswith('if [[ "$CLAIMED" == "stale" ]]')]
+    assert len(line) == 1, line
+    assert 'compgen -G "$WD/.snakemake/locks/*"' in line[0]
+
+
+def test_the_unlock_is_still_conditional():
+    """Unconditional unlocking is the original sin here: it cannot tell a lock
+    held by a dead process from one held by a live one, and it released the live
+    one. The condition must remain."""
+    lines = CONTROLLER.splitlines()
+    # the invocation, not the several comments that discuss it
+    cmd = next(i for i, l in enumerate(lines)
+               if "$SNAKEMAKE" in l and "--unlock" in l)
+    guard = next(i for i in range(cmd - 1, -1, -1) if lines[i].startswith("if [["))
+    assert '"$CLAIMED" == "stale"' in lines[guard]

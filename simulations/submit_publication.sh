@@ -239,13 +239,38 @@ echo "-- pre-flight: no controller already on these workdirs --"
 # cross product, not an arbitrary set. Skipping makes a relaunch idempotent,
 # which is what you actually need after a truncated one.
 #
-# Only a LIVE lock is skipped. A run that stopped at stage 2 (Wave 0) holds no
-# lock and must be relaunched to continue, which is the common case.
+# Only a LIVE controller is skipped, and the CLAIM is what says so -- not the
+# snakemake lock.
+#
+# WHY THIS IS NOT THE LOCK. This loop used to glob `.snakemake/locks/*` and call
+# any hit "in progress", which is wrong in the one case that matters. When a
+# controller's snakemake is killed (walltime, node failure) it dies without
+# releasing its lock, while the controller's own `trap ... EXIT` still fires and
+# removes the claim -- so the workdir is left holding a lock and NO liveness
+# record at all. The glob then refused that run forever: arm causal_maf001_paired
+# reps 16-20 came back 15/30, its two relaunch passes submitted 1 job between
+# them, and every one of the 15 stragglers had locks=2 with no claim and no
+# running job. A lock is a record that snakemake once started here; the claim is
+# the record of whether anything is running here NOW.
+#
+# Same primitive and same states as the controller's own mutex
+# (controller_publication.sbatch:101-119) -- deliberately, so the two cannot
+# disagree about who holds a workdir. A stale lock left behind is handled there,
+# by unlocking before the real invocation.
 declare -a KEEP_IDX=()
 skipped_locked=0
 for i in "${!RUN_IDS[@]}"; do
-    if compgen -G "${RUN_WD[$i]}/.snakemake/locks/*" >/dev/null 2>&1; then
-        printf "  SKIP %-3s a controller already holds this workdir\n" "${RUN_IDS[$i]}"
+    OWNER=""
+    [[ -f "${RUN_WD[$i]}/.controller_claim/jobid" ]] &&
+        OWNER=$(cat "${RUN_WD[$i]}/.controller_claim/jobid" 2>/dev/null || true)
+    STATE=""
+    if [[ -n "$OWNER" ]]; then
+        STATE=$(scontrol show job "$OWNER" 2>/dev/null | tr " " "\n" |
+                grep "^JobState=" | head -1 || true)
+    fi
+    if [[ "$STATE" == "JobState=RUNNING" || "$STATE" == "JobState=PENDING" ]]; then
+        printf "  SKIP %-3s controller %s holds this workdir (%s)\n" \
+            "${RUN_IDS[$i]}" "$OWNER" "${STATE#JobState=}"
         skipped_locked=$((skipped_locked+1))
     else
         KEEP_IDX+=("$i")
