@@ -11,11 +11,14 @@
 #   Q2  Does the human-vs-pig similarity change with TSS distance?
 #   Q3  Does it change with MAF?
 #
-# "Detectable in bulk" means pval_g * tests_emt < 0.05 -- the eigenMT-corrected
-# genotype main effect, which is the bulk-tissue effect at average cell
-# composition. See the header of ieqtl_bulk_detectability.R for why.
+# "Detectable in bulk" means pval_g is below that gene's own permutation-derived
+# nominal threshold in the matching bulk cis-eQTL release -- the same rule GTEx
+# and PigGTEx use to call a variant-gene pair a significant cis-eQTL. pval_g is
+# the genotype main effect, i.e. the bulk effect at average cell composition.
+# See the header of ieqtl_bulk_detectability.R for why.
 #
-# INPUT   ieqtl_bulk_rates.tsv  (written by ieqtl_bulk_detectability.R)
+# INPUT   ieqtl_bulk_rates.tsv, ieqtl_bulk_models.tsv
+#         (both written by ieqtl_bulk_detectability.R)
 # OUTPUT  ieqtl_bulk_figures.png
 #
 # CONVENTIONS
@@ -58,6 +61,18 @@ if (!file.exists(IN_RATES)) {
 }
 
 r <- fread(IN_RATES, showProgress = FALSE)
+
+# Pull the interaction terms from the models file rather than hardcoding them in
+# a subtitle, so the caption cannot drift from the numbers it describes.
+IN_MODELS <- file.path(HERE, "ieqtl_bulk_models.tsv")
+mods <- if (file.exists(IN_MODELS)) fread(IN_MODELS, showProgress = FALSE) else NULL
+term_txt <- function(mdl) {
+    if (is.null(mods)) return("")
+    x <- mods[comparison == "pooled" & model == mdl]
+    if (nrow(x) == 0) return("")
+    sprintf("pooled species interaction %+.3f, p = %s",
+            x$estimate[1], format.pval(x$p_value[1], digits = 2))
+}
 
 COL <- c(human = "firebrick3", pig = "royalblue3")
 
@@ -116,7 +131,8 @@ p1 <- ggplot(d1, aes(species, rate, colour = species,
     scale_shape_manual(values = c(16, 1)) +
     pct_axis +
     labs(title = "1. ieQTLs that are also detectable in bulk tissue",
-         subtitle = paste0("pval_g x tests_emt < 0.05, protein-coding, MAF >= 0.10.  ",
+         subtitle = paste0("pval_g below the gene's permutation-derived bulk threshold; ",
+                           "protein-coding, MAF >= 0.10.  ",
                            lab_n(r[stratifier == "overall" & comparison == "pooled"])),
          x = NULL, y = "bulk-detectable") +
     # Species is already on this panel's x axis, so its colour guide is
@@ -155,8 +171,8 @@ strat_panel <- function(stratifier_name, comparisons, title, subtitle, xlab,
 p2 <- strat_panel(
     "tss_distance", PRIMARY,
     "2. By distance to the TSS",
-    paste("Both species fall off with distance; the pooled species x log10(distance)",
-          "interaction is positive (p = 1.4e-4), i.e. the gap narrows as distance grows."),
+    paste0("Both species fall off with distance, and the gap narrows as distance grows (",
+           term_txt("tss"), ")."),
     "|distance to TSS|")
 
 # The human 0.05-0.10 MAF bin has no pig counterpart (pig was mapped at a 0.10

@@ -17,6 +17,25 @@
 #   Q2  Does the human-vs-pig similarity change with TSS distance?
 #   Q3  Does it change with MAF?
 #
+# THE ESTIMAND, STATED PRECISELY
+# ------------------------------
+# For each variant-gene pair that is a significant cell-type interaction eQTL,
+# does THAT SAME PAIR also reach statistical significance as an ordinary bulk
+# cis-eQTL? Two things this deliberately is NOT:
+#
+#   * NOT "is this gene a bulk eGene". A gene can be an eGene through a
+#     completely independent signal elsewhere in the cis-window; that says
+#     nothing about whether the cell-type-specific eQTL is visible in bulk.
+#     (Scoring it that way gives 86.0% human / 53.1% pig -- a different and,
+#     for this purpose, wrong question.)
+#   * NOT the fraction that TRULY have a non-null bulk effect. That is a
+#     statement about truth rather than detection, and would be estimated with
+#     Storey pi1 (~85% human / ~47% pig). The question here is explicitly about
+#     detectability at a significance threshold, so power differences between
+#     the two studies are part of what is being measured, not a confound to be
+#     removed. Interpret accordingly: pig tissues run n = 73-501 against human
+#     n = 65-670, and the median |z| of b_g is 7.42 in human vs 1.37 in pig.
+#
 # WHY pval_g IS THE BULK EFFECT (this is the load-bearing fact)
 # ------------------------------------------------------------
 # Both projects fit, per variant-gene pair,
@@ -88,7 +107,8 @@
 # ------------------------------------------------------
 #   Significant ieQTL   each species' own pval_adj_bh < 0.05 (primary),
 #                       plus a rank-matched top-K sensitivity
-#   Significant bulk    pval_g * tests_emt < 0.05  (eigenMT-corrected)
+#   Significant bulk    pval_g < the gene's own permutation-derived
+#                       pval_nominal_threshold  (see below)
 #   Genes               protein-coding only
 #   MAF                 harmonized to >= 0.10 for every cross-species number;
 #                       the human 0.05-0.10 bin is kept as a human-only stratum
@@ -116,6 +136,44 @@
 #   2. the rank-matched sensitivity equalises how deep into each ranking we go
 #   3. the adjusted model carries log10(n_samples) as a covariate
 # Read the headline numbers with all three in view.
+#
+# HOW "SIGNIFICANT BULK EFFECT" IS CALLED, AND WHY THIS WAY
+# ---------------------------------------------------------
+# The ieQTL files ship a multiple-testing-corrected p-value for the INTERACTION
+# term only (pval_adj_bh, which is BH over pval_emt = pval_gi * tests_emt).
+# There is no corrected counterpart for pval_g, so one has to be supplied.
+#
+# An earlier version of this script used pval_g * tests_emt < 0.05 -- the same
+# eigenMT burden, but with no BH step, so it was the more liberal of the two
+# rules and not symmetric with the ieQTL call. It is now retained only as the
+# `bulk_emt` diagnostic column.
+#
+# The primary rule is instead each gene's OWN permutation-derived nominal
+# threshold, taken from the matching bulk cis-eQTL release:
+#
+#   human  GTEx v8      <Tissue>.v8.egenes.txt.gz        -> pval_nominal_threshold
+#   pig    PigGTEx v0   <Tissue>.cis_qtl_fdr0.05.txt.gz  -> pval_nominal_threshold
+#
+# This is the threshold both consortia use to declare a variant-gene pair a
+# significant cis-eQTL, so "detectable in bulk" here means exactly what it means
+# in the parent projects. It is gene-specific (it absorbs cis-window size and
+# variant density per gene) and it is derived by permutation rather than by a
+# closed-form correction, so it is calibrated rather than approximate.
+#
+# Three properties of these bulk releases were checked rather than assumed:
+#   * SAME DONORS. Bulk and ieQTL sample sizes match within each species and
+#     tissue (pig Lung 149 in both, human Lung 515 in both), so within a species
+#     the bulk test and the interaction test have the same n. The species
+#     difference in power is between studies, not between the two tests.
+#   * FULL COVERAGE. Every tissue in the ieQTL set has a bulk counterpart (35/35
+#     human, 7/7 pig), and every ieGene row joins to a bulk record (asserted).
+#   * ALL GENES, not just eGenes. Both files carry every tested gene, so the
+#     threshold exists for genes that are not eGenes. This matters: the question
+#     is about the VARIANT, so a gene need not be an eGene for its
+#     cell-type-specific eQTL to be asked about.
+#
+# Switching from the eigenMT rule to this one moves the pooled rate from 68.6%
+# to 69.8% in human and 9.3% to 12.0% in pig.
 #
 # PIG PROTEIN-CODING ANNOTATION
 # -----------------------------
@@ -171,6 +229,11 @@ HUMAN_DIR    <- path.expand("~/data/gtex_ieQTL/GTEx_Analysis_v8_ieQTL")
 PIG_DIR      <- path.expand("~/data/gtex_ieQTL/PigGTEx_v0.Celltype_interaction_eQTL")
 PIG_BIOTYPE  <- file.path(HERE, "pig_gene_biotype.tsv")
 
+# Bulk cis-eQTL releases, for the per-gene permutation thresholds.
+HUMAN_BULK_TAR <- path.expand("~/data/gtex_v8/GTEx_Analysis_v8_eQTL.tar")
+PIG_BULK_DIR   <- path.expand(
+    "~/eqtl_selection/data/gtex/pgtex/eqtls_permutation/PigGTEx_v0.permutations_eQTL")
+
 N_HUMAN_FILES <- 43L
 N_PIG_FILES   <- 47L   # 50 runs launched; 3 died upstream and shipped no result:
                        # Hypothalamus.Micro, Liver.CD8ab+_ab_T_cells,
@@ -213,6 +276,52 @@ need_dir <- function(p, what) {
 need_dir(HUMAN_DIR, "human ieQTL directory")
 need_dir(PIG_DIR,   "pig ieQTL directory")
 need_file(PIG_BIOTYPE, "pig biotype table")
+need_file(HUMAN_BULK_TAR, "GTEx v8 bulk eQTL tar")
+need_dir(PIG_BULK_DIR, "PigGTEx bulk eQTL permutation directory")
+
+# ---- bulk permutation thresholds --------------------------------------------
+# Returns one row per (species, tissue, gene) with that gene's permutation-
+# derived nominal significance threshold for the bulk cis-eQTL scan.
+#
+# The human release lives inside a 1.5 GB tar. Extract every needed member in a
+# SINGLE tar pass -- the same trick red_herring_eqtls.R uses -- because one pass
+# per tissue would re-scan the archive 35 times.
+
+read_bulk_thresholds <- function(human_tissues, pig_tissues) {
+    tmp <- file.path(tempdir(), "gtex_v8_egenes")
+    dir.create(tmp, showWarnings = FALSE, recursive = TRUE)
+    members <- sprintf("GTEx_Analysis_v8_eQTL/%s.v8.egenes.txt.gz", human_tissues)
+    rc <- system2("tar", c("-xf", shQuote(HUMAN_BULK_TAR), "-C", shQuote(tmp),
+                           shQuote(members)), stdout = NULL, stderr = NULL)
+    if (rc != 0) stop("failed to extract egenes from ", HUMAN_BULK_TAR, call. = FALSE)
+
+    h <- rbindlist(lapply(human_tissues, function(t) {
+        f <- file.path(tmp, "GTEx_Analysis_v8_eQTL",
+                       sprintf("%s.v8.egenes.txt.gz", t))
+        need_file(f, sprintf("GTEx v8 egenes for %s", t))
+        d <- fread(cmd = sprintf("gzcat %s", shQuote(f)), showProgress = FALSE,
+                   select = c("gene_id", "qval", "pval_nominal_threshold"))
+        # strip the version only -- these ids have no other suffix
+        d[, .(species = "human", tissue = t, gene = sub("\\.[0-9]+$", "", gene_id),
+              bulk_nom_thresh = pval_nominal_threshold, bulk_egene = qval < 0.05)]
+    }))
+
+    p <- rbindlist(lapply(pig_tissues, function(t) {
+        f <- file.path(PIG_BULK_DIR, sprintf("%s.cis_qtl_fdr0.05.txt.gz", t))
+        need_file(f, sprintf("PigGTEx permutation results for %s", t))
+        d <- fread(cmd = sprintf("gzcat %s", shQuote(f)), showProgress = FALSE,
+                   select = c("phenotype_id", "is_eGene", "pval_nominal_threshold"))
+        d[, .(species = "pig", tissue = t, gene = phenotype_id,
+              bulk_nom_thresh = pval_nominal_threshold,
+              bulk_egene = is_eGene %in% c(TRUE, "TRUE"))]
+    }))
+
+    b <- rbind(h, p)
+    if (anyDuplicated(b[, .(species, tissue, gene)]))
+        stop("bulk threshold table has duplicate (species, tissue, gene) keys",
+             call. = FALSE)
+    b
+}
 
 # ---- shared column contract -------------------------------------------------
 # Both readers must return exactly this, in this order. Nothing downstream is
@@ -367,9 +476,41 @@ ie[, abs_tss_dist := abs(tss_distance)]
 # Validated against the published GTEx v8 n (Adipose_Subcutaneous -> 581).
 ie[, n_samples := round(median(ma_count / (2 * maf), na.rm = TRUE)), by = .(species, pair)]
 
-ie[, is_ieqtl  := pval_adj_bh < IE_FDR]
-ie[, bulk_sig  := pval_g * tests_emt < BULK_ALPHA]   # eigenMT-corrected (primary)
-ie[, bulk_nom  := pval_g < BULK_ALPHA]               # nominal (diagnostic only)
+ie[, is_ieqtl := pval_adj_bh < IE_FDR]
+
+# Attach each gene's permutation-derived bulk threshold, then call the bulk
+# effect. The join is on (species, tissue, gene) and must be complete -- a
+# missing bulk record would silently become a non-significant call.
+bulk <- read_bulk_thresholds(
+    human_tissues = sort(unique(ie[species == "human", tissue])),
+    pig_tissues   = sort(unique(ie[species == "pig",   tissue])))
+ie <- merge(ie, bulk, by = c("species", "tissue", "gene"), all.x = TRUE, sort = FALSE)
+
+# The bulk scan tested FEWER genes than the ieQTL scan (e.g. pig Spleen: 14,909
+# vs 18,951), so some ieQTL rows legitimately have no bulk record and get NA.
+# That is fine for rows we never analyse, but a significant ieGene with no bulk
+# counterpart could not be assessed at all and must not be silently scored as
+# "not detectable". Coverage on the analysis set is 100% in both species today;
+# this asserts it stays that way, and names the gap if it ever does not.
+cov <- ie[protein_coding == TRUE & is_ieqtl == TRUE,
+          .(n = .N, matched = sum(!is.na(bulk_nom_thresh))), by = species]
+cov[, frac := matched / n]
+if (any(cov$frac < 1)) {
+    bad <- ie[protein_coding == TRUE & is_ieqtl == TRUE & is.na(bulk_nom_thresh),
+              .N, by = .(species, tissue)][order(-N)]
+    stop(sprintf("significant ieGenes with no bulk counterpart: %s. Worst: %s %s (%d). %s",
+                 paste(sprintf("%s %d/%d", cov$species, cov$n - cov$matched, cov$n),
+                       collapse = ", "),
+                 bad$species[1], bad$tissue[1], bad$N[1],
+                 "These cannot be assessed and must be excluded, not counted as negatives."),
+         call. = FALSE)
+}
+
+ie[, bulk_sig := pval_g < bulk_nom_thresh]           # PRIMARY: permutation threshold
+ie[, bulk_emt := pval_g * tests_emt < BULK_ALPHA]    # previous rule, diagnostic
+ie[, bulk_nom := pval_g < BULK_ALPHA]                # uncorrected, diagnostic
+ie[, bulk_pair := bulk_sig & bulk_egene]             # consortia's own signif-pair rule
+ie[, z_g := abs(b_g) / b_g_se]                       # threshold-free power diagnostic
 
 # rank within the interaction test, for the rank-matched sensitivity
 ie[, ie_rank := frank(pval_gi, ties.method = "first"), by = .(species, pair)]
@@ -436,13 +577,18 @@ rate_table <- function(d, comparison, stratifier, stratum_col) {
     if (nrow(d) == 0) return(NULL)
     r <- d[, .(n_ieqtl     = .N,
                n_bulk_sig  = sum(bulk_sig),
+               n_bulk_emt  = sum(bulk_emt),
                n_bulk_nom  = sum(bulk_nom),
+               n_bulk_pair = sum(bulk_pair),
+               median_z_g  = median(z_g),
                n_samples   = round(mean(n_samples)),
                n_pairs     = uniqueN(pair)),
            by = c("species", stratum_col)]
     setnames(r, stratum_col, "stratum")
     r[, rate := n_bulk_sig / n_ieqtl]
+    r[, rate_emt := n_bulk_emt / n_ieqtl]
     r[, rate_nom := n_bulk_nom / n_ieqtl]
+    r[, rate_pair := n_bulk_pair / n_ieqtl]
     ci <- wilson(r$n_bulk_sig, r$n_ieqtl)
     r[, `:=`(ci_lo = ci$lo, ci_hi = ci$hi,
              comparison = comparison, stratifier = stratifier)]
@@ -595,7 +741,9 @@ OUT_GENES  <- file.path(OUTDIR, "ieqtl_bulk_detectability.tsv.gz")
 OUT_RATES  <- file.path(OUTDIR, "ieqtl_bulk_rates.tsv")
 OUT_MODELS <- file.path(OUTDIR, "ieqtl_bulk_models.tsv")
 
-keep <- c(SHAPE, "abs_tss_dist", "n_samples", "is_ieqtl", "bulk_sig", "bulk_nom",
+keep <- c(SHAPE, "abs_tss_dist", "n_samples", "is_ieqtl",
+          "bulk_nom_thresh", "bulk_egene", "bulk_sig", "bulk_emt", "bulk_nom",
+          "bulk_pair", "z_g",
           "ie_rank", "matched_group", "tss_bin", "maf_bin_fine", "maf_bin_coarse")
 fwrite(sig[, ..keep], OUT_GENES, sep = "\t", quote = FALSE,
        compress = "gzip", na = "NA")
@@ -623,12 +771,20 @@ all_ok <- c(
       nrow(pc[species == "human"]), 702923L, "%d"),
   chk("human significant protein-coding ieGenes",
       nrow(sig[species == "human"]), 3116L, "%d"),
-  chk("human pooled bulk rate, eigenMT, no MAF floor",
-      mean(sig[species == "human", bulk_sig]), 0.6486, "%.4f"),
+  chk("human pooled bulk rate, eigenMT rule, no MAF floor",
+      mean(sig[species == "human", bulk_emt]), 0.6486, "%.4f"),
   chk("human pooled bulk rate, nominal, no MAF floor",
       mean(sig[species == "human", bulk_nom]), 0.7776, "%.4f"),
-  chk("human background bulk rate, eigenMT, all PC rows",
-      mean(pc[species == "human", bulk_sig]), 0.021644, "%.4f"),
+  chk("human background bulk rate, eigenMT rule, all PC rows",
+      mean(pc[species == "human", bulk_emt]), 0.021644, "%.4f"),
+  # The primary rule, at MAF >= 0.10. Established when the permutation
+  # threshold replaced the ad-hoc eigenMT-on-pval_g rule.
+  chk("human pooled bulk rate, PERMUTATION threshold, MAF>=0.10",
+      mean(sig_h10[species == "human", bulk_sig]), 0.6982, "%.4f"),
+  chk("pig pooled bulk rate, PERMUTATION threshold, MAF>=0.10",
+      mean(sig_h10[species == "pig", bulk_sig]), 0.1197, "%.4f"),
+  chk("median |z| of b_g, human / pig (power diagnostic)",
+      median(sig_h10[species == "human", z_g]), 7.42, "%.2f"),
   chk("human Lung.Epithelial_cells ieGenes, MAF>=0.10",
       nrow(sig_h10[pair == "Lung.Epithelial_cells"]), 66L, "%d"),
   # 183, not the 195 quoted during planning: that figure predated the
@@ -649,11 +805,17 @@ print(head(smry[species == "human"], 10)); cat("  ...\n")
 print(head(smry[species == "pig"], 10));   cat("  ...\n")
 
 cat("\n"); hr()
-cat("Q1  BULK-DETECTABLE RATE  (pval_g x tests_emt < 0.05)\n"); hr()
+cat("Q1  BULK-DETECTABLE RATE  (pval_g < the gene's permutation threshold)\n"); hr()
 q1 <- rate_dt[stratifier == "overall"]
 print(q1[, .(comparison, species, n_pairs, n_samples, n_ieqtl, n_bulk_sig,
              rate = pct(rate), ci = sprintf("[%s, %s]", pct(ci_lo), pct(ci_hi)),
-             nominal = pct(rate_nom))])
+             med_z = sprintf("%.2f", median_z_g))])
+cat("\n  Alternative bulk rules on the same rows, for comparison:\n")
+print(q1[, .(comparison, species,
+             `permutation (primary)` = pct(rate),
+             `+ gene is an eGene`    = pct(rate_pair),
+             `eigenMT on pval_g`     = pct(rate_emt),
+             `uncorrected p<0.05`    = pct(rate_nom))])
 cat("\n  Fisher, human vs pig:\n")
 print(fisher_dt[stratifier == "overall",
                 .(comparison, human = pct(human_rate), pig = pct(pig_rate),
