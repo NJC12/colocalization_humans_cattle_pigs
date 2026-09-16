@@ -54,6 +54,7 @@ OUTDIR <- if (length(args) >= 1) normalizePath(args[1], mustWork = TRUE) else HE
 
 IN_RATES <- file.path(HERE, "ieqtl_bulk_rates.tsv")
 OUT_PNG  <- file.path(OUTDIR, "ieqtl_bulk_figures.png")
+OUT_SWEEP_PNG <- file.path(OUTDIR, "ieqtl_bulk_cutoff_sweep.png")
 
 if (!file.exists(IN_RATES)) {
     stop("ieqtl_bulk_rates.tsv not found -- run ieqtl_bulk_detectability.R first: ",
@@ -232,6 +233,59 @@ fig <- p1 / p2 / p3 / p4 +
 png(OUT_PNG, width = 3000, height = 3400, res = 200)
 print(fig)
 invisible(dev.off())
+
+# ---- second output: the shared-cutoff sweep ---------------------------------
+# A single uncorrected cutoff applied to every gene in both species. The point
+# of sweeping it is that no single cutoff is privileged: if the species gap were
+# an artifact of threshold placement, some cutoff would close it.
+
+IN_SWEEP <- file.path(HERE, "ieqtl_bulk_cutoff_sweep.tsv")
+if (file.exists(IN_SWEEP)) {
+    sw <- fread(IN_SWEEP, showProgress = FALSE)
+    sw[, species := factor(species, levels = c("human", "pig"))]
+    rw <- dcast(sw, alpha ~ species, value.var = "rate")
+    rw[, ratio := human / pig]
+
+    # where the per-gene permutation rule lands, for reference
+    perm <- r[stratifier == "overall" & comparison == "pooled", .(species, rate)]
+    perm[, alpha_equiv := c(1.20e-4, 3.85e-4)]   # solved in the analysis script
+
+    s1 <- ggplot(sw, aes(alpha, rate, colour = species, group = species)) +
+        geom_line(linewidth = 0.6) + geom_point(size = 1.8) +
+        # show.legend = FALSE, or this marker's shape replaces the point glyph
+        # in the collected colour legend and the key reads as an X.
+        geom_point(data = perm, aes(alpha_equiv, rate, colour = species),
+                   shape = 4, size = 3.2, stroke = 1.1, inherit.aes = FALSE,
+                   show.legend = FALSE) +
+        scale_x_log10(breaks = 10^-(0:10),
+                      labels = function(x) formatC(x, format = "g")) +
+        scale_colour_manual(values = COL) +
+        scale_y_continuous(limits = c(0, 1), labels = function(x) paste0(100 * x, "%")) +
+        labs(title = "1. Bulk-detectable rate vs a single shared cutoff",
+             subtitle = paste("One uncorrected cutoff, every gene, both species.",
+                              "\nx marks where the per-gene permutation rule lands."),
+             x = "shared cutoff on pval_g", y = "bulk-detectable") +
+        THEME + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7.5))
+
+    s2 <- ggplot(rw, aes(alpha, ratio)) +
+        geom_hline(yintercept = 1, linetype = 2, colour = "grey60") +
+        geom_line(linewidth = 0.6, colour = "grey25") +
+        geom_point(size = 1.8, colour = "grey25") +
+        scale_x_log10(breaks = 10^-(0:10),
+                      labels = function(x) formatC(x, format = "g")) +
+        scale_y_continuous(limits = c(0, NA)) +
+        labs(title = "2. The ratio is a property of the cutoff",
+             subtitle = paste("The ordering never flips, but the magnitude",
+                              "\nspans 1.3x to 17x across the sweep."),
+             x = "shared cutoff on pval_g", y = "human rate / pig rate") +
+        THEME + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7.5))
+
+    png(OUT_SWEEP_PNG, width = 2400, height = 1150, res = 200)
+    print(s1 + s2 + plot_layout(guides = "collect") & theme(legend.position = "bottom"))
+    invisible(dev.off())
+    cat(sprintf("wrote %s (%s)\n", OUT_SWEEP_PNG,
+        format(structure(file.size(OUT_SWEEP_PNG), class = "object_size"), units = "auto")))
+}
 
 cat(sprintf("wrote %s (%s)\n", OUT_PNG,
             format(structure(file.size(OUT_PNG), class = "object_size"), units = "auto")))

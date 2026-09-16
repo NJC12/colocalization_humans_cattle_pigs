@@ -661,6 +661,20 @@ if (nrow(sig_hlo) > 0) {
 
 rate_dt <- rbindlist(Filter(Negate(is.null), rates), use.names = TRUE)
 
+# ---- shared-cutoff sweep ----------------------------------------------------
+# A single uncorrected cutoff applied identically to every gene and both
+# species. Sweeping it answers the question a single number cannot: is the
+# species gap a property of the data, or of where the threshold was put? If the
+# two curves were merely shifted versions of each other, one cutoff would make
+# them agree.
+
+SWEEP <- c(0.5, 0.1, 0.05, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10)
+sweep_dt <- rbindlist(lapply(SWEEP, function(a)
+    sig_h10[, .(alpha = a, n_ieqtl = .N, n_hit = sum(pval_g < a),
+                rate = mean(pval_g < a)), by = species]))
+sweep_w <- dcast(sweep_dt, alpha ~ species, value.var = c("n_hit", "rate"))
+sweep_w[, ratio := rate_human / rate_pig]
+
 # ---- Fisher exact, human vs pig, within each stratum ------------------------
 
 fisher_by_stratum <- function(r) {
@@ -691,15 +705,16 @@ fisher_dt <- fisher_by_stratum(rate_dt)
 # a species x stratifier interaction, so the interaction coefficient is the
 # answer -- the binned rates are the descriptive display of the same thing.
 
-fit_models <- function(d, label) {
+fit_models <- function(d, label, response = "bulk_sig") {
     d <- copy(d)
     d[, species := factor(species, levels = c("human", "pig"))]
+    d[, .y := get(response)]
     out <- list()
     spec <- list(
-        tss          = bulk_sig ~ species * log10(abs_tss_dist),
-        tss_adj      = bulk_sig ~ species * log10(abs_tss_dist) + log10(n_samples),
-        maf          = bulk_sig ~ species * maf,
-        maf_adj      = bulk_sig ~ species * maf + log10(n_samples)
+        tss          = .y ~ species * log10(abs_tss_dist),
+        tss_adj      = .y ~ species * log10(abs_tss_dist) + log10(n_samples),
+        maf          = .y ~ species * maf,
+        maf_adj      = .y ~ species * maf + log10(n_samples)
     )
     # The adjusted models add log10(n_samples) to separate the species effect
     # from study size. Inside a single matched pair each species contributes
@@ -717,7 +732,7 @@ fit_models <- function(d, label) {
         if (length(ix) == 0) next
         ci <- suppressMessages(confint.default(m))
         out[[nm]] <- data.table(
-            comparison = label, model = nm,
+            comparison = label, rule = response, model = nm,
             term       = rownames(cf)[ix],
             estimate   = cf[ix, 1], se = cf[ix, 2],
             ci_lo      = ci[ix, 1], ci_hi = ci[ix, 2],
@@ -727,10 +742,17 @@ fit_models <- function(d, label) {
     rbindlist(out)
 }
 
-model_dt <- rbindlist(list(
-    fit_models(sig_h10, "pooled"),
-    fit_models(sig_h10[matched_group == "lung_epithelium"], "lung_epithelium"),
-    fit_models(sig_h10[matched_group == "brain_neurons"],   "brain_neurons")
+# Fit under both bulk rules: the gene-specific permutation threshold, and the
+# single shared uncorrected cutoff. The second applies the same number to every
+# gene in both species -- no per-gene correction, and no rescaling of p-values
+# to a common sample size -- so any species difference under it is exactly the
+# raw difference in how significant the bulk effects are.
+model_dt <- rbindlist(c(
+    lapply(c("bulk_sig", "bulk_nom"), function(rl) rbindlist(list(
+        fit_models(sig_h10, "pooled", rl),
+        fit_models(sig_h10[matched_group == "lung_epithelium"], "lung_epithelium", rl),
+        fit_models(sig_h10[matched_group == "brain_neurons"],   "brain_neurons",   rl)
+    ), use.names = TRUE))
 ), use.names = TRUE)
 
 # =============================================================================
@@ -740,6 +762,7 @@ model_dt <- rbindlist(list(
 OUT_GENES  <- file.path(OUTDIR, "ieqtl_bulk_detectability.tsv.gz")
 OUT_RATES  <- file.path(OUTDIR, "ieqtl_bulk_rates.tsv")
 OUT_MODELS <- file.path(OUTDIR, "ieqtl_bulk_models.tsv")
+OUT_SWEEP  <- file.path(OUTDIR, "ieqtl_bulk_cutoff_sweep.tsv")
 
 keep <- c(SHAPE, "abs_tss_dist", "n_samples", "is_ieqtl",
           "bulk_nom_thresh", "bulk_egene", "bulk_sig", "bulk_emt", "bulk_nom",
@@ -749,6 +772,7 @@ fwrite(sig[, ..keep], OUT_GENES, sep = "\t", quote = FALSE,
        compress = "gzip", na = "NA")
 fwrite(rate_dt,  OUT_RATES,  sep = "\t", quote = FALSE, na = "NA")
 fwrite(model_dt, OUT_MODELS, sep = "\t", quote = FALSE, na = "NA")
+fwrite(sweep_dt, OUT_SWEEP,  sep = "\t", quote = FALSE, na = "NA")
 
 # =============================================================================
 # REPORT
@@ -823,6 +847,28 @@ print(fisher_dt[stratifier == "overall",
                   p = format.pval(p_fisher, digits = 3))])
 
 cat("\n"); hr()
+cat(sprintf("Q1b  SHARED UNCORRECTED CUTOFF  (pval_g < %g, same number for every gene\n",
+            BULK_ALPHA))
+cat("     and both species; no per-gene correction, no rescaling to a common n)\n"); hr()
+q1b <- rate_dt[stratifier == "overall"]
+print(q1b[, .(comparison, species, n_ieqtl,
+              `shared cutoff`   = pct(rate_nom),
+              `per-gene perm`   = pct(rate),
+              `ratio shared/perm` = sprintf("%.2f", rate_nom / rate))])
+cat("\n  Human/pig ratio under each rule:\n")
+rr <- dcast(q1b, comparison ~ species, value.var = c("rate", "rate_nom"))
+print(rr[, .(comparison,
+             `perm: human/pig`   = sprintf("%.1fx", rate_human / rate_pig),
+             `shared: human/pig` = sprintf("%.1fx", rate_nom_human / rate_nom_pig))])
+
+cat("\n"); hr()
+cat("     Cutoff sweep, pooled. A single number applied to both species.\n"); hr()
+print(sweep_w[, .(alpha = sprintf("%g", alpha),
+                  human = pct(rate_human), pig = pct(rate_pig),
+                  `human n` = n_hit_human, `pig n` = n_hit_pig,
+                  `human/pig` = sprintf("%.1fx", ratio))])
+
+cat("\n"); hr()
 cat("Q2  RATE BY |TSS DISTANCE|\n"); hr()
 q2 <- dcast(rate_dt[stratifier == "tss_distance"],
             comparison + stratum + stratum_idx ~ species,
@@ -831,11 +877,18 @@ q2[, `:=`(human = pct(rate_human), pig = pct(rate_pig))]
 print(q2[order(comparison, stratum_idx),
          .(comparison, stratum, n_human = n_ieqtl_human, human,
            n_pig = n_ieqtl_pig, pig)])
-cat("\n  species x log10(|TSS distance|) interaction:\n")
+cat("\n  Same bins under the shared uncorrected cutoff:\n")
+q2b <- dcast(rate_dt[stratifier == "tss_distance"],
+             comparison + stratum + stratum_idx ~ species, value.var = "rate_nom")
+print(q2b[order(comparison, stratum_idx),
+          .(comparison, stratum, human = pct(human), pig = pct(pig))])
+
+cat("\n  species x log10(|TSS distance|) interaction, under both rules:\n")
 print(model_dt[model %in% c("tss", "tss_adj"),
-               .(comparison, model, estimate = sprintf("%+.3f", estimate),
+               .(comparison, rule = ifelse(rule == "bulk_sig", "per-gene perm", "shared cutoff"),
+                 model, estimate = sprintf("%+.3f", estimate),
                  ci = sprintf("[%+.3f, %+.3f]", ci_lo, ci_hi),
-                 p = format.pval(p_value, digits = 3), n)])
+                 p = format.pval(p_value, digits = 3), n)][order(comparison, rule, model)])
 
 cat("\n"); hr()
 cat("Q3  RATE BY MAF\n"); hr()
@@ -851,11 +904,18 @@ if (!is.null(rates$human_lowmaf)) {
     print(rates$human_lowmaf[, .(species, stratum, n_ieqtl, n_bulk_sig,
                                  rate = pct(rate))])
 }
-cat("\n  species x MAF interaction:\n")
+cat("\n  Same bins under the shared uncorrected cutoff:\n")
+q3b <- dcast(rate_dt[stratifier == "maf" & comparison != "human_lowmaf"],
+             comparison + stratum + stratum_idx ~ species, value.var = "rate_nom")
+print(q3b[order(comparison, stratum_idx),
+          .(comparison, stratum, human = pct(human), pig = pct(pig))])
+
+cat("\n  species x MAF interaction, under both rules:\n")
 print(model_dt[model %in% c("maf", "maf_adj"),
-               .(comparison, model, estimate = sprintf("%+.3f", estimate),
+               .(comparison, rule = ifelse(rule == "bulk_sig", "per-gene perm", "shared cutoff"),
+                 model, estimate = sprintf("%+.3f", estimate),
                  ci = sprintf("[%+.3f, %+.3f]", ci_lo, ci_hi),
-                 p = format.pval(p_value, digits = 3), n)])
+                 p = format.pval(p_value, digits = 3), n)][order(comparison, rule, model)])
 
 cat("\n"); hr()
 cat("SENSITIVITY  rank-matched (equal depth into each species' ranking)\n"); hr()
@@ -865,7 +925,7 @@ print(rate_dt[grepl("rankmatched", comparison) & stratifier == "overall",
 
 cat("\n"); hr()
 cat("WROTE\n"); hr()
-for (p in c(OUT_GENES, OUT_RATES, OUT_MODELS)) {
+for (p in c(OUT_GENES, OUT_RATES, OUT_MODELS, OUT_SWEEP)) {
     cat(sprintf("  %-46s %s\n", basename(p),
                 format(structure(file.size(p), class = "object_size"),
                        units = "auto")))
